@@ -13,6 +13,7 @@ import tempfile
 import threading
 import time
 from pathlib import Path
+from urllib.parse import urlsplit
 
 import anyio
 import httpx2
@@ -42,12 +43,15 @@ AUTOSTART_HOST = "127.0.0.1"
 AUTOSTART_PORT = 8765
 AUTOSTART_PATH = "/mcp"
 TOKEN_ENV = "DSV_MCP_TOKEN"
-HTTP_STARTUP_TIMEOUT = 15.0
+# 共享 HTTP 实例启动等待上限：冷启动可能被杀软首扫拖慢，太短会导致 Codex 握手失败
+HTTP_STARTUP_TIMEOUT = 90.0
 HTTP_TOOL_TIMEOUT = 300.0
 # HTTP 实例空闲多久（秒）后自动退出，避免 Codex 关闭后残留孤儿进程
 IDLE_SHUTDOWN_SECONDS = 600.0
 # 最近一次 HTTP 请求时间（monotonic），供空闲退出判断
 _LAST_ACTIVE: dict[str, float] = {"t": 0.0}
+# 后台拉起 HTTP 实例失败的错误记录（url -> 错误），供工具调用前检查
+_LAUNCH_FAILED: dict[str, str] = {}
 
 def _normalize_primitives(text: str) -> str:
     """把思考链里的视觉原语标记归一化为标准形态。
@@ -414,6 +418,9 @@ async def _call_http_tool(
     thinking_style: str,
 ) -> str:
     """把工具调用转发给共享 HTTP 实例。"""
+    launch_err = await _wait_http_ready(url, HTTP_STARTUP_TIMEOUT)
+    if launch_err:
+        raise DeepSeekError("upstream_unavailable", launch_err)
     headers = {"Authorization": f"Bearer {token}"} if token else None
     http_client = httpx2.AsyncClient(headers=headers) if headers else None
     try:
@@ -440,15 +447,38 @@ async def _call_http_tool(
     return "\n".join(c.text for c in result.content if getattr(c, "type", None) == "text")
 
 
+async def _wait_http_ready(url: str, timeout: float) -> str | None:
+    """等待共享 HTTP 实例就绪（后台拉起可能仍在启动），返回 None 或错误信息。"""
+    parts = urlsplit(url)
+    host = parts.hostname or "127.0.0.1"
+    port = parts.port or AUTOSTART_PORT
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        launch_err = _LAUNCH_FAILED.get("err")
+        if launch_err:
+            return launch_err
+        if _can_connect(host, port):
+            return None
+        await anyio.sleep(0.25)
+    return _LAUNCH_FAILED.get("err") or f"HTTP 实例未能在 {host}:{port} 就绪"
+
+
 def serve_stdio_autostart(
     config_path: str,
     host: str = AUTOSTART_HOST,
     port: int = AUTOSTART_PORT,
     token: str = "",
 ) -> None:
-    """stdio 自动启动代理：Codex 拉起本进程，共享 HTTP 实例没跑则自动拉起，工具调用转发过去。"""
+    """stdio 自动启动代理：后台拉起共享 HTTP 实例，握手不等待，工具调用时转发。"""
     token = _resolve_token(token)
-    _ensure_http_server(config_path, host, port, token)
+
+    def _launch_background() -> None:
+        try:
+            _ensure_http_server(config_path, host, port, token)
+        except Exception as exc:
+            _LAUNCH_FAILED["err"] = f"{type(exc).__name__}: {exc}"
+
+    threading.Thread(target=_launch_background, daemon=True).start()
     url = f"http://{host}:{port}{AUTOSTART_PATH}"
     mcp = MCPServer(name="dsv-mcp")
 

@@ -439,6 +439,129 @@ def test_http_mode_serves_tool(tmp_path, monkeypatch):
         server.close()
 
 
+def test_wait_http_ready_waits_then_ready(monkeypatch):
+    import asyncio
+
+    import dsv_mcp.server as server_mod
+
+    probe = {"n": 0}
+
+    def fake_can_connect(host, port):
+        probe["n"] += 1
+        return probe["n"] >= 3
+
+    monkeypatch.setattr(server_mod, "_can_connect", fake_can_connect)
+    server_mod._LAUNCH_FAILED.clear()
+
+    async def run():
+        return await server_mod._wait_http_ready("http://127.0.0.1:9999/mcp", 5.0)
+
+    assert asyncio.run(run()) is None
+    assert probe["n"] >= 3
+
+
+def test_wait_http_ready_times_out(monkeypatch):
+    import asyncio
+
+    import dsv_mcp.server as server_mod
+
+    monkeypatch.setattr(server_mod, "_can_connect", lambda host, port: False)
+    server_mod._LAUNCH_FAILED.clear()
+
+    async def run():
+        return await server_mod._wait_http_ready("http://127.0.0.1:9999/mcp", 0.3)
+
+    err = asyncio.run(run())
+    assert err and "9999" in err
+
+
+def test_wait_http_ready_reports_launch_failure(monkeypatch):
+    import asyncio
+
+    import dsv_mcp.server as server_mod
+
+    server_mod._LAUNCH_FAILED["err"] = "boom: 启动失败"
+
+    async def run():
+        return await server_mod._wait_http_ready("http://127.0.0.1:9999/mcp", 1.0)
+
+    try:
+        assert asyncio.run(run()) == "boom: 启动失败"
+    finally:
+        server_mod._LAUNCH_FAILED.clear()
+
+
+def test_call_http_tool_raises_when_upstream_not_ready(tmp_path, monkeypatch):
+    import asyncio
+
+    import dsv_mcp.server as server_mod
+
+    async def fake_wait(url, timeout):
+        return "启动失败"
+
+    monkeypatch.setattr(server_mod, "_wait_http_ready", fake_wait)
+
+    async def run():
+        return await server_mod._call_http_tool(
+            "http://127.0.0.1:9999/mcp", "", str(tmp_path / "x.jpg"), "q", "none"
+        )
+
+    with pytest.raises(DeepSeekError) as exc:
+        asyncio.run(run())
+    assert exc.value.code == "upstream_unavailable"
+
+
+def test_serve_stdio_autostart_does_not_block_on_http(tmp_path, monkeypatch):
+    import threading
+
+    import dsv_mcp.server as server_mod
+
+    started = threading.Event()
+    called = {"anyio": False}
+
+    def slow_ensure(config_path, host, port, token):
+        started.set()
+        time.sleep(0.5)
+
+    def fake_anyio_run(fn):
+        called["anyio"] = True
+        return None
+
+    monkeypatch.setattr(server_mod, "_ensure_http_server", slow_ensure)
+    monkeypatch.setattr(server_mod.anyio, "run", fake_anyio_run)
+    server_mod._LAUNCH_FAILED.clear()
+
+    begin = time.monotonic()
+    server_mod.serve_stdio_autostart(str(tmp_path / "config.json"))
+    elapsed = time.monotonic() - begin
+    assert called["anyio"] is True
+    assert elapsed < 0.4
+    assert started.wait(timeout=2)
+
+
+def test_serve_stdio_autostart_records_launch_failure(tmp_path, monkeypatch):
+    import dsv_mcp.server as server_mod
+
+    def failing_ensure(config_path, host, port, token):
+        raise RuntimeError("启动失败: boom")
+
+    def fake_anyio_run(fn):
+        return None
+
+    monkeypatch.setattr(server_mod, "_ensure_http_server", failing_ensure)
+    monkeypatch.setattr(server_mod.anyio, "run", fake_anyio_run)
+    server_mod._LAUNCH_FAILED.clear()
+
+    server_mod.serve_stdio_autostart(str(tmp_path / "config.json"))
+    deadline = time.monotonic() + 2
+    while "err" not in server_mod._LAUNCH_FAILED and time.monotonic() < deadline:
+        time.sleep(0.02)
+    try:
+        assert "启动失败" in server_mod._LAUNCH_FAILED.get("err", "")
+    finally:
+        server_mod._LAUNCH_FAILED.clear()
+
+
 def test_ensure_http_server_skips_when_port_open(tmp_path, monkeypatch):
     import dsv_mcp.server as server_mod
 
