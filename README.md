@@ -26,7 +26,7 @@ DeepSeek 网页版识图模式（Vision）的 MCP 服务器。通过逆向网页
 
 | 能力 | 说明 |
 | --- | --- |
-| 识图 MCP 工具 | `dsv_describe_image`：本地图片路径 + 可选问题 + 可选思考模式 |
+| 识图 MCP 工具 | `describe_image`：本地图片路径 + 可选问题 + 可选思考模式 |
 | 三种思考模式 | `grounding`（bbox 锚定对象）/ `pointing`（点坐标锚定）/ `none`（无模式提示词） |
 | 视觉原语提取 | grounding 自动从思考链提取 \\`<<｜｜ref｜｜>>obj｜｜/ref｜｜>><<｜｜box｜｜>>[[x1,y1,x2,y1]]<<｜｜/box｜｜>>\\` |
 | 多账号轮询 | 账号 round-robin 调度、token 缓存复用、上传风控冷却、验证码挑战检测（30 分钟冷却） |
@@ -56,7 +56,7 @@ dsv-mcp --host 127.0.0.1 --port 8765
 
 默认读取项目根目录（与 `src/` 同级）的 `config.json`；也可显式传入其他路径：`dsv-mcp other.json`。
 
-然后在支持 MCP 的客户端中以 `http://127.0.0.1:8765/mcp` 接入即可，工具名为 `dsv_describe_image`。
+然后在支持 MCP 的客户端中以 `http://127.0.0.1:8765/mcp` 接入即可，工具名为 `describe_image`。
 
 ## HTTP 部署
 
@@ -75,7 +75,7 @@ dsv-mcp config.json --host 127.0.0.1 --port 8765
 在 `~/.codex/config.toml` 里加一段（路径换成你自己的）：
 
 ```toml
-[mcp_servers.dsv-mcp]
+[mcp_servers.dsv]
 command = 'D:\Git_Repository\dsv-mcp\.venv\Scripts\python.exe'
 args = ['-m', 'dsv_mcp', 'D:\Git_Repository\dsv-mcp\config.json', '--autostart']
 tool_timeout_sec = 300

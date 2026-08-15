@@ -265,7 +265,7 @@ def build_mcp(
     host: str = "127.0.0.1",
     port: int = 8765,
 ) -> MCPServer:
-    mcp_kwargs: dict = {"name": "dsv-mcp"}
+    mcp_kwargs: dict = {"name": "dsv"}
     if token:
         from mcp.server.auth.provider import AccessToken
         from mcp.server.auth.settings import AuthSettings
@@ -275,7 +275,7 @@ def build_mcp(
 
             async def verify_token(self, t: str) -> AccessToken | None:
                 if t == token:
-                    return AccessToken(token=t, client_id="dsv-mcp", scopes=[])
+                    return AccessToken(token=t, client_id="dsv", scopes=[])
                 return None
 
         mcp_kwargs["auth"] = AuthSettings(
@@ -286,7 +286,7 @@ def build_mcp(
     mcp = MCPServer(**mcp_kwargs)
 
     @mcp.tool()
-    def dsv_describe_image(
+    def describe_image(
         image_path: str,
         question: str = "请详细描述这张图片的内容。",
         thinking_style: str = "grounding",
@@ -428,7 +428,7 @@ async def _call_http_tool(
             async with ClientSession(read, write, read_timeout_seconds=HTTP_TOOL_TIMEOUT) as session:
                 await session.initialize()
                 result = await session.call_tool(
-                    "dsv_describe_image",
+                    "describe_image",
                     {
                         "image_path": image_path,
                         "question": question,
@@ -480,10 +480,10 @@ def serve_stdio_autostart(
 
     threading.Thread(target=_launch_background, daemon=True).start()
     url = f"http://{host}:{port}{AUTOSTART_PATH}"
-    mcp = MCPServer(name="dsv-mcp")
+    mcp = MCPServer(name="dsv")
 
     @mcp.tool()
-    async def dsv_describe_image(
+    async def describe_image(
         image_path: str,
         question: str = "请详细描述这张图片的内容。",
         thinking_style: str = "grounding",

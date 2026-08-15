@@ -413,9 +413,9 @@ def test_http_mode_serves_tool(tmp_path, monkeypatch):
                 await session.initialize()
                 listed = await session.list_tools()
                 names = [t.name for t in listed.tools]
-                assert "dsv_describe_image" in names
+                assert "describe_image" in names
                 result = await session.call_tool(
-                    "dsv_describe_image",
+                    "describe_image",
                     {"image_path": img, "question": "什么颜色", "thinking_style": "none"},
                 )
                 text = result.content[0].text
