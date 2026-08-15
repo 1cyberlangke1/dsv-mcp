@@ -60,6 +60,20 @@ def has_point_primitive(thinking: str) -> bool:
     return bool(re.search(r"<\|point\|>", norm))
 
 
+def denormalize(coord: list[int], width: int, height: int) -> list[int]:
+    """把 0-999 归一化坐标还原为像素坐标（bbox 4 元组 / point 2 元组）。"""
+    if len(coord) == 4:
+        x1, y1, x2, y2 = coord
+        return [
+            round(x1 / 999 * width),
+            round(y1 / 999 * height),
+            round(x2 / 999 * width),
+            round(y2 / 999 * height),
+        ]
+    x, y = coord
+    return [round(x / 999 * width), round(y / 999 * height)]
+
+
 def _format_groundings(groundings: list[dict]) -> str:
     """把 ref+box 配对格式化为标准标记行（标记临时转义构造）。"""
     pipe = "\x7c"  # ASCII 半角竖线，转义构造避免手写

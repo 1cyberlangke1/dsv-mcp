@@ -257,3 +257,21 @@ def test_return_modes_pointing_no_points_falls_back(tmp_path, monkeypatch):
     result = server.describe_image(img, "q", thinking_style="pointing")
     assert result == "最终回答"
     server.close()
+
+
+def test_denormalize_bbox():
+    from dsv_mcp.server import denormalize
+
+    assert denormalize([22, 324, 74, 449], 1200, 800) == [26, 259, 89, 360]
+
+
+def test_denormalize_point():
+    from dsv_mcp.server import denormalize
+
+    assert denormalize([261, 548], 1200, 800) == [314, 439]
+
+
+def test_denormalize_edges():
+    from dsv_mcp.server import denormalize
+
+    assert denormalize([0, 0, 999, 999], 1000, 500) == [0, 0, 1000, 500]
