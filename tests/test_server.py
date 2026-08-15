@@ -129,3 +129,102 @@ def test_thinking_style_invalid(tmp_path):
     result = server.describe_image(img, "问题", thinking_style="bogus")
     assert "无效 thinking_style" in result
     server.close()
+
+
+def test_extract_groundings_recorded_cases():
+    from pathlib import Path
+
+    from dsv_mcp.server import extract_groundings
+
+    cases = Path("tests/cases")
+    for name in ("奇怪的手_grounding", "棋子_grounding"):
+        meta = json.loads((cases / f"{name}.json").read_text(encoding="utf-8"))
+        groundings = extract_groundings(meta["thinking"])
+        assert len(groundings) >= 3
+        for g in groundings:
+            assert isinstance(g["ref"], str) and g["ref"]
+            assert isinstance(g["boxes"], list) and g["boxes"]
+            assert len(g["boxes"][0]) == 4
+
+
+def test_extract_groundings_none_on_pointing_case():
+    from pathlib import Path
+
+    from dsv_mcp.server import extract_groundings
+
+    meta = json.loads(
+        (Path("tests/cases") / "迷宫_pointing.json").read_text(encoding="utf-8")
+    )
+    assert extract_groundings(meta["thinking"]) == []
+
+
+def test_has_point_primitive_recorded_cases():
+    from pathlib import Path
+
+    from dsv_mcp.server import has_point_primitive
+
+    pointing = json.loads(
+        (Path("tests/cases") / "迷宫_pointing.json").read_text(encoding="utf-8")
+    )
+    grounding = json.loads(
+        (Path("tests/cases") / "棋子_grounding.json").read_text(encoding="utf-8")
+    )
+    assert has_point_primitive(pointing["thinking"]) is True
+    assert has_point_primitive(grounding["thinking"]) is False
+
+
+def _server_with_fake_describe(tmp_path, monkeypatch, text, thinking):
+    server, img = _make_server(tmp_path)
+    monkeypatch.setattr(server.client, "login", lambda account, device_id=None: "tok")
+
+    def fake_describe(account, token, image_bytes, prompt, **kwargs):
+        return {"text": text, "thinking": thinking, "message_id": 1}
+
+    monkeypatch.setattr(server.client, "describe_image", fake_describe)
+    return server, img
+
+
+def test_return_modes_none_plain_text(tmp_path, monkeypatch):
+    server, img = _server_with_fake_describe(
+        tmp_path, monkeypatch, "最终回答", "思考内容 <|point|>[[1,2]]<|/point|>"
+    )
+    result = server.describe_image(img, "q", thinking_style="none")
+    assert result == "最终回答"
+    server.close()
+
+
+def test_return_modes_grounding_appends_json(tmp_path, monkeypatch):
+    server, img = _server_with_fake_describe(
+        tmp_path,
+        monkeypatch,
+        "最终回答",
+        "看到 <｜｜ref｜｜>手掌<｜｜/ref｜｜><｜｜box｜｜>[[1,2,3,4]]<｜｜/box｜｜>",
+    )
+    result = server.describe_image(img, "q", thinking_style="grounding")
+    assert result.startswith("最终回答\n\n[Grounding]\n")
+    payload = json.loads(result.rsplit("\n", 1)[1])
+    assert payload == [{"ref": "手掌", "boxes": [[1, 2, 3, 4]]}]
+    server.close()
+
+
+def test_return_modes_grounding_no_markers_falls_back(tmp_path, monkeypatch):
+    server, img = _server_with_fake_describe(tmp_path, monkeypatch, "最终回答", "没有标记")
+    result = server.describe_image(img, "q", thinking_style="grounding")
+    assert result == "最终回答"
+    server.close()
+
+
+def test_return_modes_pointing_with_points_returns_thinking(tmp_path, monkeypatch):
+    server, img = _server_with_fake_describe(
+        tmp_path, monkeypatch, "最终回答", "路径 <｜｜point｜｜>[[1,2],[3,4]]<｜｜/point｜｜>"
+    )
+    result = server.describe_image(img, "q", thinking_style="pointing")
+    assert result == "路径 <｜｜point｜｜>[[1,2],[3,4]]<｜｜/point｜｜>"
+    server.close()
+
+
+def test_return_modes_pointing_no_points_falls_back(tmp_path, monkeypatch):
+    server, img = _server_with_fake_describe(tmp_path, monkeypatch, "最终回答", "没有点标记")
+    result = server.describe_image(img, "q", thinking_style="pointing")
+    assert result == "最终回答"
+    server.close()

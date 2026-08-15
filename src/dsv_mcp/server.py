@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import io
+import json
+import re
 import sys
 import time
 from pathlib import Path
@@ -23,6 +25,40 @@ UPLOAD_COOLDOWN = 300.0
 GROUNDING_TITLE = "[Think with Grounding]"
 POINTING_TITLE = "[Think with Pointing]"
 THINKING_STYLES = ("grounding", "pointing", "none")
+
+
+def _normalize_primitives(text: str) -> str:
+    """把思考链里的视觉原语标记归一化为标准形态。
+
+    实测输出：竖线为每边两个全角 U+FF5C（如 <｜｜ref｜｜>）。
+    归一化后为 <|ref|>，便于解析。
+    """
+    text = text.replace("\uff5c", "|")
+    return re.sub(r"<\|+\s*(/?ref|/?box|/?point)\s*\|+>", r"<|\1|>", text)
+
+
+def extract_groundings(thinking: str) -> list[dict]:
+    """从思考链提取 ref+box 配对，返回 [{ref, boxes}]。"""
+    norm = _normalize_primitives(thinking)
+    results: list[dict] = []
+    pattern = re.compile(
+        r"<\|ref\|>(.*?)<\|/ref\|>\s*<\|box\|>(.*?)<\|/box\|>", re.S
+    )
+    for m in pattern.finditer(norm):
+        ref = re.sub(r"\s+", " ", m.group(1)).strip()
+        try:
+            boxes = json.loads(m.group(2))
+        except (json.JSONDecodeError, TypeError):
+            continue
+        if isinstance(boxes, list) and boxes:
+            results.append({"ref": ref, "boxes": boxes})
+    return results
+
+
+def has_point_primitive(thinking: str) -> bool:
+    """思考链里是否出现 point 标记。"""
+    norm = _normalize_primitives(thinking)
+    return bool(re.search(r"<\|point\|>", norm))
 
 
 def compress_image(image_bytes: bytes, max_edge: int = MAX_IMAGE_EDGE) -> tuple[bytes, str]:
@@ -119,7 +155,20 @@ class DsvServer:
                 thinking_enabled=True,
                 auto_delete=True,
             )
-            return result["text"]
+            text = result["text"]
+            thinking = result["thinking"]
+            if thinking_style == "grounding":
+                groundings = extract_groundings(thinking)
+                if groundings:
+                    return (
+                        text
+                        + "\n\n[Grounding]\n"
+                        + json.dumps(groundings, ensure_ascii=False)
+                    )
+                return text
+            if thinking_style == "pointing" and thinking and has_point_primitive(thinking):
+                return thinking
+            return text
         except DeepSeekError as exc:
             if exc.code == "auth_failed":
                 self._tokens.pop(ident, None)
