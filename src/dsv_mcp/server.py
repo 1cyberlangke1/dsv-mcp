@@ -12,6 +12,7 @@ from mcp.server.mcpserver import MCPServer
 from dsv_mcp.client import DeepSeekClient, DeepSeekError
 from dsv_mcp.config import DsvConfig
 from dsv_mcp.http import HttpClient
+from dsv_mcp.proxy import ProxyError, ProxyManager
 
 
 MAX_IMAGE_EDGE = 1024
@@ -37,7 +38,13 @@ class DsvServer:
         self.config = DsvConfig.load(config_path)
         if not self.config.accounts:
             raise ValueError("config 中至少需要一个账号")
-        self.http = HttpClient()
+        self.proxy = ProxyManager(self.config.proxy)
+        try:
+            proxy_url = self.proxy.proxy_url()
+        except ProxyError as exc:
+            self.proxy.close()
+            raise ValueError(f"代理启动失败: {exc}") from exc
+        self.http = HttpClient(proxy=proxy_url)
         self.client = DeepSeekClient(self.http)
         self._tokens: dict[str, str] = {}
         self._busy: dict[str, bool] = {}
@@ -46,6 +53,10 @@ class DsvServer:
             ident = acc.identifier()
             self._busy[ident] = False
             self._order.append(ident)
+
+    def close(self) -> None:
+        self.http.close()
+        self.proxy.close()
 
     def _acquire(self) -> tuple[str, object]:
         for ident in self._order:
