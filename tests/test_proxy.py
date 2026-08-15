@@ -16,14 +16,19 @@ def test_config_parses_all_modes(tmp_path):
         json.dumps(
             {
                 "accounts": [{"email": "a@b.c", "password": "p"}],
-                "proxy": {"mode": "managed", "singbox_bin": "sing-box", "singbox_config": "sb.json"},
+                "proxy": {
+                    "mode": "managed",
+                    "managed_subscription": "https://example.com/sub",
+                    "managed_nodes": 10,
+                },
             }
         ),
         encoding="utf-8",
     )
     config = DsvConfig.load(cfg)
     assert config.proxy.mode == "managed"
-    assert config.proxy.singbox_bin == "sing-box"
+    assert config.proxy.managed_subscription == "https://example.com/sub"
+    assert config.proxy.managed_nodes == 10
     assert config.proxy.mode in ("none", "manual", "managed")
 
 
@@ -46,42 +51,18 @@ def test_proxy_manual_requires_url():
     manager.close()
 
 
-def test_proxy_managed_requires_bin_and_config():
+def test_proxy_managed_requires_subscription():
     manager = ProxyManager(ProxyConfig(mode="managed"))
     with pytest.raises(ProxyError):
         manager.proxy_url()
     manager.close()
 
 
-def test_proxy_managed_config_missing():
-    manager = ProxyManager(
-        ProxyConfig(mode="managed", singbox_bin="sing-box", singbox_config="nope.json")
-    )
-    with pytest.raises(ProxyError):
-        manager.proxy_url()
-    manager.close()
-
-
-def test_read_listen(tmp_path):
-    cfg = tmp_path / "sb.json"
-    cfg.write_text(
-        json.dumps(
-            {
-                "inbounds": [
-                    {"type": "socks", "listen": "127.0.0.1", "port": 10808},
-                ]
-            }
-        ),
-        encoding="utf-8",
-    )
-    assert ProxyManager._read_listen(cfg) == "127.0.0.1:10808"
-
-
-def test_read_listen_missing(tmp_path):
-    cfg = tmp_path / "sb.json"
-    cfg.write_text(json.dumps({"inbounds": [{"type": "socks"}]}), encoding="utf-8")
-    with pytest.raises(ProxyError):
-        ProxyManager._read_listen(cfg)
+def test_pick_port_returns_local_addr():
+    addr = ProxyManager._pick_port()
+    host, port = addr.rsplit(":", 1)
+    assert host == "127.0.0.1"
+    assert port.isdigit()
 
 
 def test_job_object_roundtrip():

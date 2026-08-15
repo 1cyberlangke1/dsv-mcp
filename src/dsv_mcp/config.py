@@ -26,8 +26,9 @@ class ProxyConfig(BaseModel):
 
     mode: Literal["none", "manual", "managed"] = "none"
     url: str | None = None  # manual 模式的代理地址，如 socks5://127.0.0.1:1080
-    singbox_bin: str | None = None  # managed 模式的 sing-box 可执行文件路径
-    singbox_config: str | None = None  # managed 模式的 sing-box 配置文件路径
+    managed_subscription: str | None = None  # managed 模式的 vless 订阅 URL
+    managed_nodes: int = 30  # managed 模式参与自动选优的节点数（取订阅前 N 个）
+    cache_dir: str | None = None  # 内核与生成配置的缓存目录（默认 %LOCALAPPDATA%/dsv-mcp）
 
 
 class DsvConfig(BaseModel):
