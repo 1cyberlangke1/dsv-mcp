@@ -119,10 +119,7 @@ class DsvServer:
                 thinking_enabled=True,
                 auto_delete=True,
             )
-            parts = [result["text"]]
-            if result["thinking"]:
-                parts.append(f"\n\n[思考过程]\n{result['thinking']}")
-            return "\n".join(parts)
+            return result["text"]
         except DeepSeekError as exc:
             if exc.code == "auth_failed":
                 self._tokens.pop(ident, None)

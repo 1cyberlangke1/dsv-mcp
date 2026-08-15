@@ -116,7 +116,7 @@ def test_thinking_style_inserts_prompt(tmp_path, monkeypatch):
     result = server.describe_image(img, "问题", thinking_style="grounding")
     assert captured["prompt"] == f"{GROUNDING_TITLE}\n问题"
     assert captured["thinking_enabled"] is True
-    assert "[思考过程]" in result
+    assert result == "ok"
     server.describe_image(img, "问题", thinking_style="pointing")
     assert captured["prompt"] == f"{POINTING_TITLE}\n问题"
     server.describe_image(img, "问题", thinking_style="none")
