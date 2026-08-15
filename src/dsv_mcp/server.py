@@ -141,7 +141,18 @@ def build_mcp(server: DsvServer) -> MCPServer:
         question: str = "请详细描述这张图片的内容。",
         thinking_style: str = "grounding",
     ) -> str:
-        """使用 DeepSeek 识图模式描述图片；thinking_style: grounding/pointing/none。"""
+        """Describe an image via DeepSeek vision mode.
+
+        Args:
+            image_path: local image file path.
+            question: optional prompt; defaults to asking for a detailed description.
+            thinking_style: "grounding" (default) anchors objects with bounding boxes in
+                thinking, "pointing" anchors positions with point coordinates,
+                "none" adds no mode prompt.
+
+        Returns:
+            Plain-text description of the image.
+        """
         return server.describe_image(image_path, question, thinking_style)
 
     return mcp
