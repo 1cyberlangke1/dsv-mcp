@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
+import pytest
+
 from dsv_mcp.client import (
+    DeepSeekClient,
+    DeepSeekError,
     extract_create_session_id,
     extract_response_status,
     extract_upload_file_result,
@@ -65,3 +69,27 @@ def test_extract_upload_file_result_top_level():
     resp = {"code": 0, "data": {"biz_data": {"id": "file-2"}}}
     result = extract_upload_file_result(resp)
     assert result["id"] == "file-2"
+
+
+def test_upload_40301_maps_to_rate_limited(monkeypatch):
+    class FakeHttp:
+        def post_multipart(self, url, files, headers=None, timeout=120):
+            return {"code": 0, "data": {"biz_code": 40301, "biz_msg": ""}}
+
+    client = DeepSeekClient(FakeHttp())
+    monkeypatch.setattr(client, "get_pow_for_target", lambda *a, **k: "pow")
+    with pytest.raises(DeepSeekError) as exc:
+        client.upload_file(None, "tok", "a.jpg", "image/jpeg", b"x")
+    assert exc.value.code == "upload_rate_limited"
+
+
+def test_upload_other_error_keeps_code(monkeypatch):
+    class FakeHttp:
+        def post_multipart(self, url, files, headers=None, timeout=120):
+            return {"code": 0, "data": {"biz_code": 50000, "biz_msg": "boom"}}
+
+    client = DeepSeekClient(FakeHttp())
+    monkeypatch.setattr(client, "get_pow_for_target", lambda *a, **k: "pow")
+    with pytest.raises(DeepSeekError) as exc:
+        client.upload_file(None, "tok", "a.jpg", "image/jpeg", b"x")
+    assert exc.value.code == "upload_failed"

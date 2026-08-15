@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import io
 import sys
+import time
 from pathlib import Path
 
 import anyio
@@ -16,6 +17,8 @@ from dsv_mcp.proxy import ProxyError, ProxyManager
 
 
 MAX_IMAGE_EDGE = 1024
+# 上传被风控（40301）后账号的冷却时长（秒）
+UPLOAD_COOLDOWN = 300.0
 
 
 def compress_image(image_bytes: bytes, max_edge: int = MAX_IMAGE_EDGE) -> tuple[bytes, str]:
@@ -48,7 +51,9 @@ class DsvServer:
         self.client = DeepSeekClient(self.http)
         self._tokens: dict[str, str] = {}
         self._busy: dict[str, bool] = {}
+        self._cooldown: dict[str, float] = {}
         self._order: list[str] = []
+        self._rr = -1  # round-robin 游标
         for acc in self.config.accounts:
             ident = acc.identifier()
             self._busy[ident] = False
@@ -59,11 +64,14 @@ class DsvServer:
         self.proxy.close()
 
     def _acquire(self) -> tuple[str, object]:
-        for ident in self._order:
-            if not self._busy[ident]:
+        now = time.monotonic()
+        for _ in range(len(self._order)):
+            self._rr += 1
+            ident = self._order[self._rr % len(self._order)]
+            if not self._busy[ident] and now >= self._cooldown.get(ident, 0.0):
                 self._busy[ident] = True
                 return ident, next(a for a in self.config.accounts if a.identifier() == ident)
-        raise DeepSeekError("rate_limited", "所有账号忙，请稍后重试")
+        raise DeepSeekError("rate_limited", "所有账号忙或冷却中，请稍后重试")
 
     def _token_for(self, ident: str) -> str:
         token = self._tokens.get(ident, "")
@@ -106,6 +114,8 @@ class DsvServer:
         except DeepSeekError as exc:
             if exc.code == "auth_failed":
                 self._tokens.pop(ident, None)
+            elif exc.code == "upload_rate_limited":
+                self._cooldown[ident] = time.monotonic() + UPLOAD_COOLDOWN
             return f"识图失败: {exc.code} {exc}"
         except Exception as exc:
             return f"识图失败: {type(exc).__name__}: {exc}"

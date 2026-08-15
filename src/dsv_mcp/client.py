@@ -177,14 +177,14 @@ class DeepSeekClient:
     # ---------- PoW ----------
 
     def get_pow_for_target(self, account: Account, token: str, target_path: str) -> str:
-        """获取并求解 PoW（同账号+target 缓存）。"""
+        """获取并求解 PoW（challenge 一次性，取走即删）。"""
         cache_key = (account.identifier(), target_path)
         cached = self._pow_cache.get(cache_key)
         if cached:
             expire_at, header = cached
+            self._pow_cache.pop(cache_key, None)
             if expire_at > time.time() + 30:
                 return header
-            self._pow_cache.pop(cache_key, None)
         resp = self.http.post_json(
             CREATE_POW_URL, {"target_path": target_path}, headers=self._auth_headers(token)
         )
@@ -253,6 +253,8 @@ class DeepSeekClient:
         )
         code, biz_code, _, biz_msg = extract_response_status(resp)
         if code != 0 or biz_code != 0:
+            if biz_code == 40301:
+                raise DeepSeekError("upload_rate_limited", "上传过于频繁，请稍后再试")
             raise DeepSeekError("upload_failed", f"上传失败: {biz_msg or code}")
         result = extract_upload_file_result(resp)
         if result["id"] == "":
