@@ -9,11 +9,14 @@ from dsv_mcp.client import (
     DeepSeekError,
     detect_captcha_challenge,
     extract_create_session_id,
+    extract_mute_until,
     extract_response_status,
     extract_upload_file_result,
     int_from,
+    is_user_banned_response,
     normalize_mobile_for_login,
 )
+from dsv_mcp.config import Account
 
 
 def test_normalize_mobile_china_full():
@@ -47,6 +50,82 @@ def test_extract_response_status_falls_back_to_biz_data_msg():
     resp = {"code": 0, "data": {"biz_code": 0, "biz_data": {"msg": "nested"}}}
     code, biz_code, msg, biz_msg = extract_response_status(resp)
     assert biz_msg == "nested"
+
+
+def test_is_user_banned_response():
+    assert is_user_banned_response(10, "anything")
+    assert is_user_banned_response(0, "USER_IS_BANNED")
+    assert is_user_banned_response(7, "wrong password") is False
+
+
+def test_extract_mute_until_nested():
+    resp = {
+        "code": 0,
+        "data": {"biz_code": 0, "biz_data": {"is_muted": 1, "mute_until": 1799999999}},
+    }
+    assert extract_mute_until(resp) == 1799999999.0
+
+
+def _login_client(resp):
+    class FakeHttp:
+        def post_json(self, url, payload, headers=None, timeout=60):
+            return resp
+
+    return DeepSeekClient(FakeHttp())
+
+
+def _account():
+    return Account(email="a@b.c", password="p")
+
+
+def test_login_biz_code_10_raises_banned():
+    resp = {"code": 0, "data": {"biz_code": 10, "biz_msg": "account suspended"}}
+    with pytest.raises(DeepSeekError) as exc:
+        _login_client(resp).login(_account())
+    assert exc.value.code == "account_banned"
+
+
+def test_login_user_is_banned_msg_raises_banned():
+    resp = {"code": 0, "data": {"biz_code": 3, "biz_msg": "USER_IS_BANNED"}}
+    with pytest.raises(DeepSeekError) as exc:
+        _login_client(resp).login(_account())
+    assert exc.value.code == "account_banned"
+
+
+def test_login_muted_future_until_raises_muted():
+    future = 4102444800  # 2100 年，测试用
+    resp = {
+        "code": 0,
+        "data": {
+            "biz_code": 0,
+            "biz_data": {
+                "user": {
+                    "token": "tok",
+                    "chat": {"is_muted": 1, "mute_until": future},
+                }
+            },
+        },
+    }
+    with pytest.raises(DeepSeekError) as exc:
+        _login_client(resp).login(_account())
+    assert exc.value.code == "account_muted"
+    assert exc.value.until == future
+
+
+def test_login_muted_expired_returns_token():
+    resp = {
+        "code": 0,
+        "data": {
+            "biz_code": 0,
+            "biz_data": {
+                "user": {
+                    "token": "tok",
+                    "chat": {"is_muted": 1, "mute_until": 1},
+                }
+            },
+        },
+    }
+    assert _login_client(resp).login(_account()) == "tok"
 
 
 def test_extract_create_session_id_direct():

@@ -46,6 +46,35 @@ def parse_deepseek_sse_line(raw: str) -> tuple[dict[str, Any] | None, bool, bool
     return chunk, False, True
 
 
+def extract_muted_json_until(line: str) -> float | None:
+    """非 SSE JSON 行里识别禁言信号，返回 mute_until（Unix 秒），无信号返回 None。
+
+    上游禁言时 completion 可能直接返回 JSON 而非 SSE 流：
+    {"code":0,"data":{"biz_code":5,"biz_msg":"user is muted","biz_data":{"is_muted":1,"mute_until":...}}}
+    """
+    s = line.strip()
+    if not s.startswith("{"):
+        return None
+    try:
+        obj = json.loads(s)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(obj, dict):
+        return None
+    data = obj.get("data") if isinstance(obj.get("data"), dict) else {}
+    biz_code = data.get("biz_code")
+    biz_msg = str(data.get("biz_msg") or "").lower()
+    biz_data = data.get("biz_data") if isinstance(data.get("biz_data"), dict) else {}
+    muted = biz_code == 5 or "muted" in biz_msg or biz_data.get("is_muted") == 1
+    if not muted:
+        return None
+    for m in (data, biz_data):
+        until = m.get("mute_until")
+        if isinstance(until, (int, float)) and until > 0:
+            return float(until)
+    return 0.0
+
+
 def is_fragment_status_path(path: str) -> bool:
     """isFragmentStatusPath。"""
     if path == "" or path == "response/status":
@@ -489,6 +518,7 @@ class CollectResult:
         self.content_filter = False
         self.upstream_error = ""
         self.response_message_id = 0
+        self.mute_until: float | None = None  # 上游禁言到期时间，None 表示未检测到
 
 
 def collect_stream(lines, thinking_enabled: bool) -> CollectResult:
@@ -502,6 +532,11 @@ def collect_stream(lines, thinking_enabled: bool) -> CollectResult:
     response_message_id = 0
     current_type = "thinking" if thinking_enabled else "text"
     for line in lines:
+        if result.mute_until is None:
+            mute_until = extract_muted_json_until(line)
+            if mute_until is not None:
+                result.mute_until = mute_until
+                break
         chunk, done, parsed = parse_deepseek_sse_line(line)
         if parsed and not done:
             mid = observe_response_message_id(chunk)

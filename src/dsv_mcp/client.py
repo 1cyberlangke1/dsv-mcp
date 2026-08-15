@@ -29,9 +29,10 @@ from dsv_mcp.sse import collect_stream
 
 
 class DeepSeekError(Exception):
-    def __init__(self, code: str, message: str):
+    def __init__(self, code: str, message: str, until: float | None = None):
         super().__init__(message)
         self.code = code
+        self.until = until  # 禁言到期 Unix 秒时间戳（仅 account_muted 使用）
 
 
 class LoginError(DeepSeekError):
@@ -88,6 +89,24 @@ def extract_response_status(resp: dict[str, Any]) -> tuple[int, int, str, str]:
         biz_data = data.get("biz_data") if isinstance(data.get("biz_data"), dict) else {}
         biz_msg = str(biz_data.get("msg") or "")
     return code, biz_code, msg, biz_msg
+
+
+def is_user_banned_response(biz_code: int, biz_msg: str) -> bool:
+    """登录响应是否表示账号被上游永久停用（USER_IS_BANNED）。"""
+    return biz_code == 10 or "user_is_banned" in str(biz_msg).lower()
+
+
+def extract_mute_until(resp: dict[str, Any]) -> float:
+    """从登录/业务响应提取禁言到期 Unix 秒时间戳，无则 0。"""
+    data = resp.get("data") if isinstance(resp.get("data"), dict) else {}
+    biz_data = data.get("biz_data") if isinstance(data.get("biz_data"), dict) else {}
+    user = biz_data.get("user") if isinstance(biz_data.get("user"), dict) else {}
+    chat = user.get("chat") if isinstance(user.get("chat"), dict) else {}
+    for m in (data, biz_data, chat):
+        until = m.get("mute_until")
+        if isinstance(until, (int, float)) and until > 0:
+            return float(until)
+    return 0.0
 
 
 def extract_create_session_id(resp: dict[str, Any]) -> str:
@@ -257,9 +276,17 @@ class DeepSeekClient:
         data = resp.get("data") if isinstance(resp.get("data"), dict) else {}
         biz_code = int_from(data.get("biz_code"))
         if biz_code != 0:
+            biz_msg = str(data.get("biz_msg") or "")
+            if is_user_banned_response(biz_code, biz_msg):
+                raise DeepSeekError("account_banned", f"账号已被停用: {biz_msg or biz_code}")
             raise LoginError(f"login failed: {data.get('biz_msg')}")
         biz_data = data.get("biz_data") if isinstance(data.get("biz_data"), dict) else {}
         user = biz_data.get("user") if isinstance(biz_data.get("user"), dict) else {}
+        chat = user.get("chat") if isinstance(user.get("chat"), dict) else {}
+        if int_from(chat.get("is_muted")) == 1:
+            mute_until = extract_mute_until(resp)
+            if mute_until == 0.0 or mute_until > time.time():
+                raise DeepSeekError("account_muted", "账号禁言中", until=mute_until or None)
         token = str(user.get("token") or "").strip()
         if token == "":
             raise LoginError("login succeeded without token")
@@ -452,6 +479,12 @@ class DeepSeekClient:
         result = self._completion_once(
             account, token, session_id, COMPLETION_URL, payload, thinking_enabled
         )
+        if result["mute_until"] is not None:
+            raise DeepSeekError(
+                "account_muted",
+                "账号禁言中",
+                until=result["mute_until"] or None,
+            )
         # 自动续写：INCOMPLETE / 流中断 → continue（defaultAutoContinueLimit=32）
         message_id = result["response_message_id"]
         rounds = 0
@@ -465,6 +498,12 @@ class DeepSeekClient:
             result = self._completion_once(
                 account, token, session_id, CONTINUE_URL, cont_payload, thinking_enabled
             )
+            if result["mute_until"] is not None:
+                raise DeepSeekError(
+                    "account_muted",
+                    "账号禁言中",
+                    until=result["mute_until"] or None,
+                )
             message_id = result["response_message_id"]
         if result["content_filter"]:
             raise DeepSeekError("content_filter", "上游内容过滤")
@@ -496,6 +535,7 @@ class DeepSeekClient:
             "thinking": collected.thinking,
             "content_filter": collected.content_filter,
             "upstream_error": collected.upstream_error,
+            "mute_until": collected.mute_until,
             "response_message_id": collected.response_message_id,
             "need_continue": (
                 collected.response_message_id > 0

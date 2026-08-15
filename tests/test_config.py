@@ -49,3 +49,22 @@ def test_config_invalid_proxy_mode(tmp_path):
     )
     with pytest.raises(Exception):
         DsvConfig.load(cfg)
+
+
+def test_banned_flag_roundtrip(tmp_path):
+    cfg = tmp_path / "config.json"
+    cfg.write_text(
+        json.dumps(
+            {"accounts": [{"email": "a@b.c", "password": "p", "banned": True}]}
+        ),
+        encoding="utf-8",
+    )
+    config = DsvConfig.load(cfg)
+    assert config.accounts[0].banned is True
+    config.save(cfg)
+    reloaded = DsvConfig.load(cfg)
+    assert reloaded.accounts[0].banned is True
+
+
+def test_banned_flag_defaults_false():
+    assert Account(email="a@b.c", password="p").banned is False

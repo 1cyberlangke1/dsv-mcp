@@ -16,6 +16,7 @@ class Account(BaseModel):
     mobile: str | None = None
     password: str = ""
     locale: str = "zh_CN"
+    banned: bool = False  # 上游永久停用标记，持久化在配置文件，停用账号不参与调度
 
     def identifier(self) -> str:
         return (self.email or self.mobile or "").strip()
@@ -43,3 +44,8 @@ class DsvConfig(BaseModel):
         if not p.exists():
             raise FileNotFoundError(f"config file not found: {p}")
         return cls.model_validate(json.loads(p.read_text(encoding="utf-8")))
+
+    def save(self, path: str | Path) -> None:
+        """把当前配置写回文件（保持人工可读的缩进格式）。"""
+        p = Path(path)
+        p.write_text(self.model_dump_json(indent=2, exclude_none=True), encoding="utf-8")

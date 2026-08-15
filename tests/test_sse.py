@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dsv_mcp.sse import (
     collect_stream,
+    extract_muted_json_until,
     parse_deepseek_content_line,
     parse_deepseek_sse_line,
     trim_continuation_overlap,
@@ -31,6 +32,36 @@ def test_collect_text_and_finished():
     assert result.text == "你好"
     assert result.thinking == ""
     assert result.response_message_id == 7
+
+
+def test_extract_muted_json_biz_code_5():
+    line = '{"code":0,"data":{"biz_code":5,"biz_msg":"user is muted"}}'
+    assert extract_muted_json_until(line) == 0.0
+
+
+def test_extract_muted_json_with_until():
+    line = (
+        '{"code":0,"data":{"biz_code":5,"biz_msg":"user is muted",'
+        '"biz_data":{"is_muted":1,"mute_until":1799999999}}}'
+    )
+    assert extract_muted_json_until(line) == 1799999999.0
+
+
+def test_extract_muted_json_plain_sse_line():
+    assert extract_muted_json_until('data: {"p":"response/status","v":"WIP"}') is None
+    assert extract_muted_json_until("not json") is None
+
+
+def test_collect_stream_detects_muted_json():
+    lines = ['{"code":0,"data":{"biz_code":5,"biz_msg":"user is muted"}}']
+    result = collect_stream(lines, thinking_enabled=False)
+    assert result.mute_until == 0.0
+
+
+def test_collect_stream_normal_has_no_mute():
+    lines = ['data: {"p": "response/status", "v": "FINISHED"}']
+    result = collect_stream(lines, thinking_enabled=False)
+    assert result.mute_until is None
 
 
 def test_collect_thinking_separated():

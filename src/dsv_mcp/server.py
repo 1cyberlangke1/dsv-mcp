@@ -107,6 +107,7 @@ class DsvServer:
     """MCP 服务器：账号轮询 + 识图调用。"""
 
     def __init__(self, config_path: str | Path):
+        self._config_path = str(config_path)
         self.config = DsvConfig.load(config_path)
         if not self.config.accounts:
             raise ValueError("config 中至少需要一个账号")
@@ -137,9 +138,12 @@ class DsvServer:
         for _ in range(len(self._order)):
             self._rr += 1
             ident = self._order[self._rr % len(self._order)]
+            account = next(a for a in self.config.accounts if a.identifier() == ident)
+            if account.banned:
+                continue
             if not self._busy[ident] and now >= self._cooldown.get(ident, 0.0):
                 self._busy[ident] = True
-                return ident, next(a for a in self.config.accounts if a.identifier() == ident)
+                return ident, account
         raise DeepSeekError("rate_limited", "所有账号忙或冷却中，请稍后重试")
 
     def _token_for(self, ident: str) -> str:
@@ -148,6 +152,10 @@ class DsvServer:
             return token
         account = next(a for a in self.config.accounts if a.identifier() == ident)
         token = self.client.login(account)
+        if account.banned:
+            # 登录成功说明停用已解除，清掉持久化标记
+            account.banned = False
+            self.config.save(self._config_path)
         self._tokens[ident] = token
         return token
 
@@ -197,15 +205,34 @@ class DsvServer:
         except DeepSeekError as exc:
             if exc.code == "auth_failed":
                 self._tokens.pop(ident, None)
+            elif exc.code == "account_banned":
+                self._mark_banned(ident)
             elif exc.code == "upload_rate_limited":
                 self._cooldown[ident] = time.monotonic() + UPLOAD_COOLDOWN
             elif exc.code == "captcha_required":
                 self._cooldown[ident] = time.monotonic() + CAPTCHA_COOLDOWN
+            elif exc.code == "account_muted":
+                self._cooldown[ident] = time.monotonic() + self._muted_seconds(exc)
             return f"识图失败: {exc.code} {exc}"
         except Exception as exc:
             return f"识图失败: {type(exc).__name__}: {exc}"
         finally:
             self._busy[ident] = False
+
+    def _muted_seconds(self, exc: DeepSeekError) -> float:
+        """account_muted 剩余冷却秒数：有到期时间按差值，未知按验证码冷却兜底。"""
+        until = exc.until or 0.0
+        if until > 0:
+            return max(0.0, until - time.time())
+        return CAPTCHA_COOLDOWN
+
+    def _mark_banned(self, ident: str) -> None:
+        """账号被永久停用：标记并写回配置文件，调度时直接跳过。"""
+        for account in self.config.accounts:
+            if account.identifier() == ident:
+                account.banned = True
+                break
+        self.config.save(self._config_path)
 
 
 def build_mcp(

@@ -99,6 +99,66 @@ def test_acquire_skips_cooldown_account(tmp_path):
     server.close()
 
 
+def test_acquire_skips_banned_account(tmp_path):
+    server, _ = _make_server(tmp_path, emails=("a@b.c", "c@d.e"))
+    next(a for a in server.config.accounts if a.identifier() == "a@b.c").banned = True
+    ident, _ = server._acquire()
+    assert ident == "c@d.e"
+    server.close()
+
+
+def test_acquire_all_banned_raises(tmp_path):
+    server, _ = _make_server(tmp_path, emails=("a@b.c",))
+    next(a for a in server.config.accounts if a.identifier() == "a@b.c").banned = True
+    with pytest.raises(DeepSeekError):
+        server._acquire()
+    server.close()
+
+
+def test_banned_persisted_to_config_file(tmp_path, monkeypatch):
+    server, img = _make_server(tmp_path)
+    monkeypatch.setattr(server.client, "login", lambda account, device_id=None: "tok")
+
+    def boom(*args, **kwargs):
+        raise DeepSeekError("account_banned", "账号已被停用")
+
+    monkeypatch.setattr(server.client, "describe_image", boom)
+    result = server.describe_image(img, "q")
+    assert "account_banned" in result
+    saved = json.loads((tmp_path / "config.json").read_text(encoding="utf-8"))
+    assert saved["accounts"][0]["banned"] is True
+    assert server.config.accounts[0].banned is True
+    with pytest.raises(DeepSeekError):
+        server._acquire()
+    server.close()
+
+
+def test_muted_sets_cooldown_until(tmp_path, monkeypatch):
+    server, img = _make_server(tmp_path)
+    monkeypatch.setattr(server.client, "login", lambda account, device_id=None: "tok")
+    until = time.time() + 3600
+
+    def boom(*args, **kwargs):
+        raise DeepSeekError("account_muted", "账号禁言中", until=until)
+
+    monkeypatch.setattr(server.client, "describe_image", boom)
+    result = server.describe_image(img, "q")
+    assert "account_muted" in result
+    assert server._cooldown["a@b.c"] > time.monotonic() + 3500
+    server.close()
+
+
+def test_banned_cleared_on_successful_login(tmp_path, monkeypatch):
+    server, _ = _make_server(tmp_path)
+    next(a for a in server.config.accounts if a.identifier() == "a@b.c").banned = True
+    monkeypatch.setattr(server.client, "login", lambda account, device_id=None: "tok")
+    assert server._token_for("a@b.c") == "tok"
+    assert server.config.accounts[0].banned is False
+    saved = json.loads((tmp_path / "config.json").read_text(encoding="utf-8"))
+    assert saved["accounts"][0]["banned"] is False
+    server.close()
+
+
 def test_acquire_round_robin(tmp_path):
     server, _ = _make_server(tmp_path, emails=("a@b.c", "c@d.e", "e@f.g"))
     first, _ = server._acquire()

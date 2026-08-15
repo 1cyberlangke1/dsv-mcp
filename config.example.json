@@ -2,7 +2,8 @@
   "accounts": [
     {
       "email": "your@email.com",
-      "password": "your_password"
+      "password": "your_password",
+      "banned": false
     },
     {
       "mobile": "+8613800138000",
