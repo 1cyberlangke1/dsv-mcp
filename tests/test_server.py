@@ -185,33 +185,41 @@ def _server_with_fake_describe(tmp_path, monkeypatch, text, thinking):
 
 
 def test_return_modes_none_plain_text(tmp_path, monkeypatch):
-    from dsv_mcp.server import _raw_tag
+    from pathlib import Path
 
+    meta = json.loads(
+        (Path("tests/cases") / "棋子_grounding.json").read_text(encoding="utf-8")
+    )
     server, img = _server_with_fake_describe(
-        tmp_path,
-        monkeypatch,
-        "最终回答",
-        f"思考内容 {_raw_tag('point')}[[1,2]]{_raw_tag('/point')}",
+        tmp_path, monkeypatch, meta["text"], meta["thinking"]
     )
     result = server.describe_image(img, "q", thinking_style="none")
-    assert result == "最终回答"
+    assert result == meta["text"]
     server.close()
 
 
 def test_return_modes_grounding_appends_ref_box_lines(tmp_path, monkeypatch):
-    from dsv_mcp.server import _norm_tag, _raw_tag
+    import json as _json
+    from pathlib import Path
 
-    server, img = _server_with_fake_describe(
-        tmp_path,
-        monkeypatch,
-        "最终回答",
-        f"看到 {_raw_tag('ref')}手掌{_raw_tag('/ref')}"
-        f"{_raw_tag('box')}[[1,2,3,4]]{_raw_tag('/box')}",
+    meta = json.loads(
+        (Path("tests/cases") / "棋子_grounding.json").read_text(encoding="utf-8")
     )
-    expected = (
-        "最终回答\n\n"
-        f"{_norm_tag('ref')}手掌{_norm_tag('/ref')}"
-        f"{_norm_tag('box')}[[1,2,3,4]]{_norm_tag('/box')}"
+    from dsv_mcp.server import extract_groundings
+
+    groundings = extract_groundings(meta["thinking"])
+    assert groundings
+    pipe = "\x7c"
+    tag = lambda name: f"<{pipe}{name}{pipe}>"
+    lines = [
+        f"{tag('ref')}{g['ref']}{tag('/ref')}{tag('box')}"
+        f"{_json.dumps(g['boxes'], ensure_ascii=False, separators=(',', ':'))}"
+        f"{tag('/box')}"
+        for g in groundings
+    ]
+    expected = meta["text"] + "\n\n" + "\n".join(lines)
+    server, img = _server_with_fake_describe(
+        tmp_path, monkeypatch, meta["text"], meta["thinking"]
     )
     result = server.describe_image(img, "q", thinking_style="grounding")
     assert result == expected
@@ -226,15 +234,19 @@ def test_return_modes_grounding_no_markers_falls_back(tmp_path, monkeypatch):
 
 
 def test_return_modes_pointing_with_points_returns_thinking(tmp_path, monkeypatch):
-    from dsv_mcp.server import _norm_tag, _raw_tag
+    from pathlib import Path
 
-    server, img = _server_with_fake_describe(
-        tmp_path,
-        monkeypatch,
-        "最终回答",
-        f"路径 {_raw_tag('point')}[[1,2],[3,4]]{_raw_tag('/point')}",
+    meta = json.loads(
+        (Path("tests/cases") / "迷宫_pointing.json").read_text(encoding="utf-8")
     )
-    expected = f"路径 {_norm_tag('point')}[[1,2],[3,4]]{_norm_tag('/point')}"
+    from dsv_mcp.server import _normalize_primitives
+
+    expected = _normalize_primitives(meta["thinking"])
+    pipe = "\x7c"
+    assert f"<{pipe}point{pipe}>" in expected
+    server, img = _server_with_fake_describe(
+        tmp_path, monkeypatch, meta["text"], meta["thinking"]
+    )
     result = server.describe_image(img, "q", thinking_style="pointing")
     assert result == expected
     server.close()

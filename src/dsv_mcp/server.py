@@ -26,20 +26,6 @@ GROUNDING_TITLE = "[Think with Grounding]"
 POINTING_TITLE = "[Think with Pointing]"
 THINKING_STYLES = ("grounding", "pointing", "none")
 
-# 视觉原语标记统一从这里构造，避免手写弄混
-_FF = "\uff5c"  # U+FF5C 全角竖线（模型实测输出形态，每边 2 个）
-
-
-def _raw_tag(name: str) -> str:
-    """实测字节形态标记：< ｜｜name｜｜ >（每边 2 个全角 U+FF5C）。"""
-    return f"<{_FF}{_FF}{name}{_FF}{_FF}>"
-
-
-def _norm_tag(name: str) -> str:
-    """归一化标准形态标记：<|name|>（单半角竖线）。"""
-    return f"<|{name}|>"
-
-
 def _normalize_primitives(text: str) -> str:
     """把思考链里的视觉原语标记归一化为标准形态。
 
@@ -75,13 +61,14 @@ def has_point_primitive(thinking: str) -> bool:
 
 
 def _format_groundings(groundings: list[dict]) -> str:
-    """把 ref+box 配对格式化为 <|ref|>对象<|/ref|><|box|>[[...]]<|/box|> 行。"""
+    """把 ref+box 配对格式化为标准标记行（标记临时转义构造）。"""
+    pipe = "\x7c"  # ASCII 半角竖线，转义构造避免手写
+    tag = lambda name: f"<{pipe}{name}{pipe}>"
     lines = []
     for g in groundings:
         boxes = json.dumps(g["boxes"], ensure_ascii=False, separators=(",", ":"))
         lines.append(
-            f"{_norm_tag('ref')}{g['ref']}{_norm_tag('/ref')}"
-            f"{_norm_tag('box')}{boxes}{_norm_tag('/box')}"
+            f"{tag('ref')}{g['ref']}{tag('/ref')}{tag('box')}{boxes}{tag('/box')}"
         )
     return "\n".join(lines)
 
