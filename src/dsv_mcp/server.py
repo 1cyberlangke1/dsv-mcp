@@ -10,6 +10,7 @@ import socket
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 from pathlib import Path
 
@@ -43,6 +44,10 @@ AUTOSTART_PATH = "/mcp"
 TOKEN_ENV = "DSV_MCP_TOKEN"
 HTTP_STARTUP_TIMEOUT = 15.0
 HTTP_TOOL_TIMEOUT = 300.0
+# HTTP 实例空闲多久（秒）后自动退出，避免 Codex 关闭后残留孤儿进程
+IDLE_SHUTDOWN_SECONDS = 600.0
+# 最近一次 HTTP 请求时间（monotonic），供空闲退出判断
+_LAST_ACTIVE: dict[str, float] = {"t": 0.0}
 
 def _normalize_primitives(text: str) -> str:
     """把思考链里的视觉原语标记归一化为标准形态。
@@ -317,14 +322,45 @@ def serve_http(
     port: int = 8765,
     token: str = "",
 ) -> None:
-    """以 streamable HTTP 常驻单实例（多客户端共享账号池）。"""
+    """以 streamable HTTP 常驻单实例（多客户端共享账号池），空闲自动退出。"""
     mcp = build_mcp(server, token=token, host=host, port=port)
-    mcp.run(
-        transport="streamable-http",
-        host=host,
-        port=port,
-        streamable_http_path="/mcp",
-    )
+    app = _touch_middleware(mcp.streamable_http_app(streamable_http_path="/mcp", host=host))
+    _LAST_ACTIVE["t"] = time.monotonic()
+    import uvicorn
+
+    config = uvicorn.Config(app, host=host, port=port, log_level="error")
+    uvicorn_server = uvicorn.Server(config)
+    threading.Thread(
+        target=_idle_watchdog,
+        args=(uvicorn_server, IDLE_SHUTDOWN_SECONDS),
+        daemon=True,
+    ).start()
+    uvicorn_server.run()
+
+
+def _touch_middleware(app):
+    """每个 HTTP 请求刷新 _LAST_ACTIVE，供空闲退出判断。"""
+
+    async def wrapped(scope, receive, send):
+        if scope["type"] == "http":
+            _LAST_ACTIVE["t"] = time.monotonic()
+        await app(scope, receive, send)
+
+    return wrapped
+
+
+def _idle_watchdog(
+    server,
+    idle_seconds: float,
+    now=time.monotonic,
+    sleep=time.sleep,
+) -> None:
+    """连续 idle_seconds 秒无请求则置 should_exit 让 uvicorn 优雅退出。"""
+    while not server.should_exit:
+        if now() - _LAST_ACTIVE["t"] >= idle_seconds:
+            server.should_exit = True
+            return
+        sleep(2.0)
 
 
 def _can_connect(host: str, port: int) -> bool:

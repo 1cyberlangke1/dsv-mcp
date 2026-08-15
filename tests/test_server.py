@@ -546,6 +546,70 @@ def test_call_http_tool_forwards_to_http_instance(tmp_path, monkeypatch):
         server.close()
 
 
+def test_touch_middleware_refreshes_active(monkeypatch):
+    import dsv_mcp.server as server_mod
+
+    class FakeClock:
+        now = 1000.0
+
+    monkeypatch.setattr(server_mod.time, "monotonic", lambda: FakeClock.now)
+    server_mod._LAST_ACTIVE["t"] = 0.0
+    called = {"n": 0}
+
+    async def app(scope, receive, send):
+        called["n"] += 1
+
+    import asyncio
+
+    asyncio.run(server_mod._touch_middleware(app)({"type": "http"}, None, None))
+    assert server_mod._LAST_ACTIVE["t"] == 1000.0
+    assert called["n"] == 1
+
+
+def test_idle_watchdog_exits_after_timeout(monkeypatch):
+    import dsv_mcp.server as server_mod
+
+    class FakeServer:
+        should_exit = False
+
+    fake = FakeServer()
+    clock = {"t": 5000.0}
+    server_mod._LAST_ACTIVE["t"] = 1000.0
+    server_mod._idle_watchdog(
+        fake,
+        600.0,
+        now=lambda: clock["t"],
+        sleep=lambda s: None,
+    )
+    assert fake.should_exit is True
+
+
+def test_idle_watchdog_keeps_running_while_active(monkeypatch):
+    import dsv_mcp.server as server_mod
+
+    class FakeServer:
+        should_exit = False
+
+    clock = {"t": 1500.0}
+    sleeps = {"n": 0}
+    server_mod._LAST_ACTIVE["t"] = 1000.0
+
+    def fake_sleep(sec):
+        sleeps["n"] += 1
+        if sleeps["n"] >= 3:
+            fake.should_exit = True  # 模拟外部请求同时发生
+
+    fake = FakeServer()
+    server_mod._idle_watchdog(
+        fake,
+        600.0,
+        now=lambda: clock["t"],
+        sleep=fake_sleep,
+    )
+    assert fake.should_exit is True
+    assert sleeps["n"] == 3
+
+
 def test_http_mode_token_auth(tmp_path, monkeypatch):
     import asyncio
     import socket
