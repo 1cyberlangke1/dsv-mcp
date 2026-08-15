@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import sys
 import time
 
 import pytest
@@ -356,8 +357,9 @@ def test_denormalize_edges():
 def test_parse_args_defaults():
     from dsv_mcp.server import PROJECT_ROOT, _parse_args
 
-    config, host, port, token = _parse_args([])
+    config, autostart, host, port, token = _parse_args([])
     assert config == str(PROJECT_ROOT / "config.json")
+    assert autostart is False
     assert host == "127.0.0.1"
     assert port == 8765
     assert token == ""
@@ -366,10 +368,11 @@ def test_parse_args_defaults():
 def test_parse_args_full():
     from dsv_mcp.server import _parse_args
 
-    config, host, port, token = _parse_args(
-        ["--host", "0.0.0.0", "--port", "9000", "--token", "secret", "my.json"]
+    config, autostart, host, port, token = _parse_args(
+        ["--autostart", "--host", "0.0.0.0", "--port", "9000", "--token", "secret", "my.json"]
     )
     assert config == "my.json"
+    assert autostart is True
     assert host == "0.0.0.0"
     assert port == 9000
     assert token == "secret"
@@ -430,6 +433,113 @@ def test_http_mode_serves_tool(tmp_path, monkeypatch):
                 time.sleep(0.2)
         else:
             raise AssertionError("HTTP server 未就绪")
+    finally:
+        uvicorn_server.should_exit = True
+        thread.join(timeout=5)
+        server.close()
+
+
+def test_ensure_http_server_skips_when_port_open(tmp_path, monkeypatch):
+    import dsv_mcp.server as server_mod
+
+    calls = {"popen": 0}
+    monkeypatch.setattr(server_mod, "_can_connect", lambda host, port: True)
+    monkeypatch.setattr(
+        server_mod.subprocess, "Popen", lambda *a, **k: calls.__setitem__("popen", calls["popen"] + 1)
+    )
+    server_mod._ensure_http_server(str(tmp_path / "config.json"), "127.0.0.1", 9999, "")
+    assert calls["popen"] == 0
+
+
+def test_ensure_http_server_starts_when_down(tmp_path, monkeypatch):
+    import dsv_mcp.server as server_mod
+
+    probe = {"n": 0}
+    calls = {"cmd": None}
+
+    def fake_can_connect(host, port):
+        probe["n"] += 1
+        return probe["n"] > 1
+
+    def fake_popen(cmd, **kwargs):
+        calls["cmd"] = cmd
+        return object()
+
+    monkeypatch.setattr(server_mod, "_can_connect", fake_can_connect)
+    monkeypatch.setattr(server_mod.subprocess, "Popen", fake_popen)
+    cfg = str(tmp_path / "config.json")
+    server_mod._ensure_http_server(cfg, "127.0.0.1", 9999, "sec")
+    assert calls["cmd"] == [
+        sys.executable,
+        "-m",
+        "dsv_mcp",
+        cfg,
+        "--host",
+        "127.0.0.1",
+        "--port",
+        "9999",
+        "--token",
+        "sec",
+    ]
+
+
+def test_resolve_token_env_fallback(monkeypatch):
+    from dsv_mcp.server import _resolve_token
+
+    assert _resolve_token("") == ""
+    monkeypatch.setenv("DSV_MCP_TOKEN", "from-env")
+    assert _resolve_token("") == "from-env"
+    assert _resolve_token("explicit") == "explicit"
+
+
+def test_call_http_tool_forwards_to_http_instance(tmp_path, monkeypatch):
+    import asyncio
+    import socket
+    import threading
+
+    import uvicorn
+
+    from dsv_mcp.server import _call_http_tool, build_http_app
+
+    server, img = _make_server(tmp_path)
+    monkeypatch.setattr(server.client, "login", lambda account, device_id=None: "tok")
+
+    def fake_describe(account, token, image_bytes, prompt, **kwargs):
+        return {"text": "转发成功", "thinking": "", "message_id": 1}
+
+    monkeypatch.setattr(server.client, "describe_image", fake_describe)
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        port = sock.getsockname()[1]
+    app = build_http_app(server)
+    config = uvicorn.Config(app, host="127.0.0.1", port=port, log_level="error")
+    config.install_signal_handlers = False
+    uvicorn_server = uvicorn.Server(config)
+    thread = threading.Thread(target=uvicorn_server.run, daemon=True)
+    thread.start()
+
+    async def run():
+        return await _call_http_tool(
+            f"http://127.0.0.1:{port}/mcp",
+            "",
+            img,
+            "什么颜色",
+            "none",
+        )
+
+    try:
+        deadline = time.monotonic() + 10
+        last_err = None
+        while time.monotonic() < deadline:
+            try:
+                text = asyncio.run(run())
+                assert text == "转发成功"
+                break
+            except (ConnectionError, OSError) as exc:
+                last_err = exc
+                time.sleep(0.2)
+        else:
+            raise AssertionError(f"HTTP server 未就绪: {last_err}")
     finally:
         uvicorn_server.should_exit = True
         thread.join(timeout=5)

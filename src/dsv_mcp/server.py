@@ -4,11 +4,19 @@ from __future__ import annotations
 
 import io
 import json
+import os
 import re
+import socket
+import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
 
+import anyio
+import httpx2
+from mcp import ClientSession
+from mcp.client.streamable_http import streamable_http_client
 from mcp.server.mcpserver import MCPServer
 
 from dsv_mcp.client import DeepSeekClient, DeepSeekError
@@ -28,6 +36,13 @@ CAPTCHA_COOLDOWN = 1800.0
 GROUNDING_TITLE = "[Think with Grounding]"
 POINTING_TITLE = "[Think with Pointing]"
 THINKING_STYLES = ("grounding", "pointing", "none")
+# autostart 模式的共享 HTTP 实例默认参数
+AUTOSTART_HOST = "127.0.0.1"
+AUTOSTART_PORT = 8765
+AUTOSTART_PATH = "/mcp"
+TOKEN_ENV = "DSV_MCP_TOKEN"
+HTTP_STARTUP_TIMEOUT = 15.0
+HTTP_TOOL_TIMEOUT = 300.0
 
 def _normalize_primitives(text: str) -> str:
     """把思考链里的视觉原语标记归一化为标准形态。
@@ -312,17 +327,132 @@ def serve_http(
     )
 
 
-def _parse_args(argv: list[str]) -> tuple[str, str, int, str]:
-    """解析 CLI 参数，返回 (config_path, host, port, token)。"""
+def _can_connect(host: str, port: int) -> bool:
+    """端口是否已在监听（HTTP 实例是否在跑）。"""
+    try:
+        with socket.create_connection((host, port), timeout=0.25):
+            return True
+    except OSError:
+        return False
+
+
+def _ensure_http_server(
+    config_path: str,
+    host: str,
+    port: int,
+    token: str,
+) -> None:
+    """检查共享 HTTP 实例；没在跑则后台拉起（脱离会话常驻），等待就绪。"""
+    if _can_connect(host, port):
+        return
+    log_path = Path(tempfile.gettempdir()) / "dsv-mcp-http.log"
+    cmd = [sys.executable, "-m", "dsv_mcp", config_path, "--host", host, "--port", str(port)]
+    if token:
+        cmd += ["--token", token]
+    with log_path.open("ab", buffering=0) as log_file:
+        subprocess.Popen(
+            cmd,
+            stdin=subprocess.DEVNULL,
+            stdout=log_file,
+            stderr=log_file,
+            start_new_session=True,
+        )
+    deadline = time.monotonic() + HTTP_STARTUP_TIMEOUT
+    while time.monotonic() < deadline:
+        if _can_connect(host, port):
+            return
+        time.sleep(0.1)
+    raise RuntimeError(f"HTTP 实例未能在 {host}:{port} 启动，日志: {log_path}")
+
+
+def _resolve_token(token: str) -> str:
+    """CLI 未给 token 时回退环境变量 DSV_MCP_TOKEN。"""
+    return token or os.environ.get(TOKEN_ENV, "")
+
+
+async def _call_http_tool(
+    url: str,
+    token: str,
+    image_path: str,
+    question: str,
+    thinking_style: str,
+) -> str:
+    """把工具调用转发给共享 HTTP 实例。"""
+    headers = {"Authorization": f"Bearer {token}"} if token else None
+    http_client = httpx2.AsyncClient(headers=headers) if headers else None
+    try:
+        async with streamable_http_client(url, http_client=http_client) as (read, write):
+            async with ClientSession(read, write, read_timeout_seconds=HTTP_TOOL_TIMEOUT) as session:
+                await session.initialize()
+                result = await session.call_tool(
+                    "dsv_describe_image",
+                    {
+                        "image_path": image_path,
+                        "question": question,
+                        "thinking_style": thinking_style,
+                    },
+                    read_timeout_seconds=HTTP_TOOL_TIMEOUT,
+                )
+    finally:
+        if http_client is not None:
+            await http_client.aclose()
+    if result.is_error:
+        text = "\n".join(
+            c.text for c in result.content if getattr(c, "type", None) == "text"
+        )
+        raise DeepSeekError("upstream_error", text or "工具调用失败")
+    return "\n".join(c.text for c in result.content if getattr(c, "type", None) == "text")
+
+
+def serve_stdio_autostart(
+    config_path: str,
+    host: str = AUTOSTART_HOST,
+    port: int = AUTOSTART_PORT,
+    token: str = "",
+) -> None:
+    """stdio 自动启动代理：Codex 拉起本进程，共享 HTTP 实例没跑则自动拉起，工具调用转发过去。"""
+    token = _resolve_token(token)
+    _ensure_http_server(config_path, host, port, token)
+    url = f"http://{host}:{port}{AUTOSTART_PATH}"
+    mcp = MCPServer(name="dsv-mcp")
+
+    @mcp.tool()
+    async def dsv_describe_image(
+        image_path: str,
+        question: str = "请详细描述这张图片的内容。",
+        thinking_style: str = "grounding",
+    ) -> str:
+        """Describe an image via DeepSeek vision mode.
+
+        Args:
+            image_path: local image file path.
+            question: optional prompt; defaults to asking for a detailed description.
+            thinking_style: "grounding" (default) anchors objects with bounding boxes in
+                thinking, "pointing" anchors positions with point coordinates,
+                "none" adds no mode prompt.
+
+        Returns:
+            Plain-text description of the image.
+        """
+        return await _call_http_tool(url, token, image_path, question, thinking_style)
+
+    anyio.run(mcp.run_stdio_async)
+
+
+def _parse_args(argv: list[str]) -> tuple[str, bool, str, int, str]:
+    """解析 CLI 参数，返回 (config_path, autostart, host, port, token)。"""
     root_config = PROJECT_ROOT / "config.json"
     config_path = str(root_config) if root_config.exists() else "config.json"
+    autostart = False
     host = "127.0.0.1"
     port = 8765
     token = ""
     i = 0
     while i < len(argv):
         arg = argv[i]
-        if arg == "--host" and i + 1 < len(argv):
+        if arg == "--autostart":
+            autostart = True
+        elif arg == "--host" and i + 1 < len(argv):
             host = argv[i + 1]
             i += 1
         elif arg == "--port" and i + 1 < len(argv):
@@ -334,10 +464,13 @@ def _parse_args(argv: list[str]) -> tuple[str, str, int, str]:
         elif not arg.startswith("-"):
             config_path = arg
         i += 1
-    return config_path, host, port, token
+    return config_path, autostart, host, port, token
 
 
 def main() -> None:
-    config_path, host, port, token = _parse_args(sys.argv[1:])
+    config_path, autostart, host, port, token = _parse_args(sys.argv[1:])
+    if autostart:
+        serve_stdio_autostart(config_path, host=host, port=port, token=token)
+        return
     server = DsvServer(config_path)
     serve_http(server, host=host, port=port, token=token)
