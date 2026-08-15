@@ -291,3 +291,147 @@ def test_denormalize_edges():
     from dsv_mcp.server import denormalize
 
     assert denormalize([0, 0, 999, 999], 1000, 500) == [0, 0, 1000, 500]
+
+
+def test_parse_args_defaults():
+    from dsv_mcp.server import _parse_args
+
+    config, host, port, token = _parse_args([])
+    assert config == "config.json"
+    assert host == "127.0.0.1"
+    assert port == 8765
+    assert token == ""
+
+
+def test_parse_args_full():
+    from dsv_mcp.server import _parse_args
+
+    config, host, port, token = _parse_args(
+        ["--host", "0.0.0.0", "--port", "9000", "--token", "secret", "my.json"]
+    )
+    assert config == "my.json"
+    assert host == "0.0.0.0"
+    assert port == 9000
+    assert token == "secret"
+
+
+def test_http_mode_serves_tool(tmp_path, monkeypatch):
+    import asyncio
+    import socket
+    import threading
+
+    import uvicorn
+    from mcp import ClientSession
+    from mcp.client.streamable_http import streamable_http_client
+
+    from dsv_mcp.server import build_http_app
+
+    server, img = _make_server(tmp_path)
+    monkeypatch.setattr(server.client, "login", lambda account, device_id=None: "tok")
+
+    def fake_describe(account, token, image_bytes, prompt, **kwargs):
+        return {"text": "蓝色背景", "thinking": "", "message_id": 1}
+
+    monkeypatch.setattr(server.client, "describe_image", fake_describe)
+    app = build_http_app(server)
+
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        port = sock.getsockname()[1]
+    config = uvicorn.Config(app, host="127.0.0.1", port=port, log_level="error")
+    config.install_signal_handlers = False
+    uvicorn_server = uvicorn.Server(config)
+    thread = threading.Thread(target=uvicorn_server.run, daemon=True)
+    thread.start()
+
+    async def client_roundtrip():
+        async with streamable_http_client(f"http://127.0.0.1:{port}/mcp") as (read, write):
+            async with ClientSession(read, write) as session:
+                await session.initialize()
+                listed = await session.list_tools()
+                names = [t.name for t in listed.tools]
+                assert "dsv_describe_image" in names
+                result = await session.call_tool(
+                    "dsv_describe_image",
+                    {"image_path": img, "question": "什么颜色", "thinking_style": "none"},
+                )
+                text = result.content[0].text
+                assert text == "蓝色背景"
+
+    try:
+        import time
+
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline:
+            try:
+                asyncio.run(client_roundtrip())
+                break
+            except (ConnectionError, OSError):
+                time.sleep(0.2)
+        else:
+            raise AssertionError("HTTP server 未就绪")
+    finally:
+        uvicorn_server.should_exit = True
+        thread.join(timeout=5)
+        server.close()
+
+
+def test_http_mode_token_auth(tmp_path, monkeypatch):
+    import asyncio
+    import socket
+    import threading
+    import time
+    import urllib.request
+
+    import uvicorn
+
+    from dsv_mcp.server import build_http_app
+
+    server, img = _make_server(tmp_path)
+    monkeypatch.setattr(server.client, "login", lambda account, device_id=None: "tok")
+    monkeypatch.setattr(
+        server.client,
+        "describe_image",
+        lambda *a, **k: {"text": "ok", "thinking": "", "message_id": 1},
+    )
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        port = sock.getsockname()[1]
+    app = build_http_app(server, token="secret", host="127.0.0.1", port=port)
+    config = uvicorn.Config(app, host="127.0.0.1", port=port, log_level="error")
+    config.install_signal_handlers = False
+    uvicorn_server = uvicorn.Server(config)
+    thread = threading.Thread(target=uvicorn_server.run, daemon=True)
+    thread.start()
+
+    try:
+        deadline = time.monotonic() + 10
+        last_err: Exception | None = None
+        while time.monotonic() < deadline:
+            try:
+                body = b'{"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}}'
+                accept = "application/json, text/event-stream"
+                headers = {"Content-Type": "application/json", "Accept": accept}
+                url = f"http://127.0.0.1:{port}/mcp"
+
+                authed_headers = {**headers, "Authorization": "Bearer secret"}
+                req = urllib.request.Request(url, data=body, headers=authed_headers)
+                with urllib.request.urlopen(req, timeout=3) as resp:
+                    assert resp.status == 200
+
+                req_noauth = urllib.request.Request(url, data=body, headers=headers)
+                try:
+                    with urllib.request.urlopen(req_noauth, timeout=3) as resp:
+                        assert resp.status == 401
+                except urllib.error.HTTPError as exc:
+                    assert exc.code == 401
+                break
+            except (AssertionError, ConnectionError, OSError, urllib.error.URLError) as exc:
+                last_err = exc
+                time.sleep(0.2)
+        else:
+            raise AssertionError(f"HTTP server 未就绪: {last_err}")
+    finally:
+        uvicorn_server.should_exit = True
+        thread.join(timeout=5)
+        server.close()

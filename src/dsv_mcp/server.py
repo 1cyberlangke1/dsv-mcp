@@ -9,7 +9,6 @@ import sys
 import time
 from pathlib import Path
 
-import anyio
 from mcp.server.mcpserver import MCPServer
 
 from dsv_mcp.client import DeepSeekClient, DeepSeekError
@@ -207,8 +206,31 @@ class DsvServer:
             self._busy[ident] = False
 
 
-def build_mcp(server: DsvServer) -> MCPServer:
-    mcp = MCPServer(name="dsv-mcp")
+def build_mcp(
+    server: DsvServer,
+    token: str = "",
+    host: str = "127.0.0.1",
+    port: int = 8765,
+) -> MCPServer:
+    mcp_kwargs: dict = {"name": "dsv-mcp"}
+    if token:
+        from mcp.server.auth.provider import AccessToken
+        from mcp.server.auth.settings import AuthSettings
+
+        class StaticTokenVerifier:
+            """SDK TokenVerifier 协议实现：固定 Bearer token 校验。"""
+
+            async def verify_token(self, t: str) -> AccessToken | None:
+                if t == token:
+                    return AccessToken(token=t, client_id="dsv-mcp", scopes=[])
+                return None
+
+        mcp_kwargs["auth"] = AuthSettings(
+            issuer_url=f"http://{host}:{port}",
+            resource_server_url=f"http://{host}:{port}",
+        )
+        mcp_kwargs["token_verifier"] = StaticTokenVerifier()
+    mcp = MCPServer(**mcp_kwargs)
 
     @mcp.tool()
     def dsv_describe_image(
@@ -233,8 +255,59 @@ def build_mcp(server: DsvServer) -> MCPServer:
     return mcp
 
 
+def build_http_app(
+    server: DsvServer,
+    token: str = "",
+    host: str = "127.0.0.1",
+    port: int = 8765,
+):
+    """构造 streamable HTTP ASGI app（单实例多客户端共享账号池）。"""
+    mcp = build_mcp(server, token=token, host=host, port=port)
+    app = mcp.streamable_http_app(streamable_http_path="/mcp", host=host)
+    return app
+
+
+def serve_http(
+    server: DsvServer,
+    host: str = "127.0.0.1",
+    port: int = 8765,
+    token: str = "",
+) -> None:
+    """以 streamable HTTP 常驻单实例（多客户端共享账号池）。"""
+    mcp = build_mcp(server, token=token, host=host, port=port)
+    mcp.run(
+        transport="streamable-http",
+        host=host,
+        port=port,
+        streamable_http_path="/mcp",
+    )
+
+
+def _parse_args(argv: list[str]) -> tuple[str, str, int, str]:
+    """解析 CLI 参数，返回 (config_path, host, port, token)。"""
+    config_path = "config.json"
+    host = "127.0.0.1"
+    port = 8765
+    token = ""
+    i = 0
+    while i < len(argv):
+        arg = argv[i]
+        if arg == "--host" and i + 1 < len(argv):
+            host = argv[i + 1]
+            i += 1
+        elif arg == "--port" and i + 1 < len(argv):
+            port = int(argv[i + 1])
+            i += 1
+        elif arg == "--token" and i + 1 < len(argv):
+            token = argv[i + 1]
+            i += 1
+        elif not arg.startswith("-"):
+            config_path = arg
+        i += 1
+    return config_path, host, port, token
+
+
 def main() -> None:
-    config_path = sys.argv[1] if len(sys.argv) > 1 else "config.json"
+    config_path, host, port, token = _parse_args(sys.argv[1:])
     server = DsvServer(config_path)
-    mcp = build_mcp(server)
-    anyio.run(mcp.run_stdio_async)
+    serve_http(server, host=host, port=port, token=token)

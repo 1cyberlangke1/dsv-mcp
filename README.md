@@ -14,6 +14,7 @@ DeepSeek 网页版识图模式（Vision）的 MCP 服务器。通过逆向网页
 
 - [核心能力](#核心能力)
 - [快速开始](#快速开始)
+- [HTTP 部署](#http-部署)
 - [配置说明](#配置说明)
 - [思考模式](#思考模式)
 - [代理模式](#代理模式)
@@ -51,13 +52,25 @@ pip install -e .
 }
 ```
 
-启动 MCP stdio 服务器：
+启动 MCP streamable HTTP 服务器：
 
 ```bash
-dsv-mcp config.json
+dsv-mcp config.json --host 127.0.0.1 --port 8765
 ```
 
-然后在支持 MCP 的客户端中接入即可，工具名为 `dsv_describe_image`。
+然后在支持 MCP 的客户端中以 `http://127.0.0.1:8765/mcp` 接入即可，工具名为 `dsv_describe_image`。
+
+## HTTP 部署
+
+服务器以 streamable HTTP 单实例常驻运行，所有客户端共享同一账号池：
+
+```bash
+dsv-mcp config.json --host 127.0.0.1 --port 8765
+```
+
+- `--host` / `--port`：监听地址与端口（默认 `127.0.0.1:8765`）
+- `--token <secret>`：可选；配置后所有请求需带 `Authorization: Bearer <secret>`，否则返回 401。多客户端部署建议设置
+- MCP 端点路径固定为 `/mcp`，客户端按 `http://<host>:<port>/mcp` 接入
 
 ## 配置说明
 
