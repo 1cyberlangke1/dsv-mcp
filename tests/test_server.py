@@ -336,24 +336,6 @@ def test_return_modes_pointing_no_points_falls_back(tmp_path, monkeypatch):
     server.close()
 
 
-def test_denormalize_bbox():
-    from dsv_mcp.server import denormalize
-
-    assert denormalize([22, 324, 74, 449], 1200, 800) == [26, 259, 89, 360]
-
-
-def test_denormalize_point():
-    from dsv_mcp.server import denormalize
-
-    assert denormalize([261, 548], 1200, 800) == [314, 439]
-
-
-def test_denormalize_edges():
-    from dsv_mcp.server import denormalize
-
-    assert denormalize([0, 0, 999, 999], 1000, 500) == [0, 0, 1000, 500]
-
-
 def test_parse_args_defaults():
     from dsv_mcp.server import PROJECT_ROOT, _parse_args
 

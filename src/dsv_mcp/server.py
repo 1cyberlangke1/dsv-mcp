@@ -87,20 +87,6 @@ def has_point_primitive(thinking: str) -> bool:
     return bool(re.search(r"<\|point\|>", norm))
 
 
-def denormalize(coord: list[int], width: int, height: int) -> list[int]:
-    """把 0-999 归一化坐标还原为像素坐标（bbox 4 元组 / point 2 元组）。"""
-    if len(coord) == 4:
-        x1, y1, x2, y2 = coord
-        return [
-            round(x1 / 999 * width),
-            round(y1 / 999 * height),
-            round(x2 / 999 * width),
-            round(y2 / 999 * height),
-        ]
-    x, y = coord
-    return [round(x / 999 * width), round(y / 999 * height)]
-
-
 def _format_groundings(groundings: list[dict]) -> str:
     """把 ref+box 配对格式化为标准标记行（标记临时转义构造）。"""
     pipe = "\x7c"  # ASCII 半角竖线，转义构造避免手写
@@ -301,7 +287,11 @@ def build_mcp(
                 "none" adds no mode prompt.
 
         Returns:
-            Plain-text description of the image.
+            Plain-text description, plus grounding boxes when available. Coordinates
+            are normalized 0-999 values relative to the image, independent of its
+            pixel size: scale them by image_width/999 and image_height/999 to draw.
+            Grounding boxes are returned as "<|ref|>label<|/ref|><|box|>[[x1,y1,x2,y2]]<|/box|>"
+            lines; pointing returns the thinking chain containing "<|point|>[[x,y]]<|/point|>".
         """
         return server.describe_image(image_path, question, thinking_style)
 
@@ -498,7 +488,11 @@ def serve_stdio_autostart(
                 "none" adds no mode prompt.
 
         Returns:
-            Plain-text description of the image.
+            Plain-text description, plus grounding boxes when available. Coordinates
+            are normalized 0-999 values relative to the image, independent of its
+            pixel size: scale them by image_width/999 and image_height/999 to draw.
+            Grounding boxes are returned as "<|ref|>label<|/ref|><|box|>[[x1,y1,x2,y2]]<|/box|>"
+            lines; pointing returns the thinking chain containing "<|point|>[[x,y]]<|/point|>".
         """
         return await _call_http_tool(url, token, image_path, question, thinking_style)
 
