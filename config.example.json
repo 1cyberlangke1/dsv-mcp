@@ -1,0 +1,15 @@
+{
+  "accounts": [
+    {
+      "email": "your@email.com",
+      "password": "your_password"
+    },
+    {
+      "mobile": "+8613800138000",
+      "password": "your_password"
+    }
+  ],
+  "proxy": {
+    "mode": "none"
+  }
+}

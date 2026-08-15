@@ -39,24 +39,21 @@ DeepSeek 网页版识图模式（Vision）的 MCP 服务器。通过逆向网页
 pip install -e .
 ```
 
-准备配置文件 `config.json`：
+复制示例配置并填写账号：
 
-```json
-{
-  "accounts": [
-    { "email": "your@email.com", "password": "your_password" }
-  ],
-  "proxy": {
-    "mode": "none"
-  }
-}
+```bash
+cp config.example.json config.json
 ```
+
+`config.json` 包含真实凭据，已在 `.gitignore` 中忽略、不会提交；仓库内只保留 `config.example.json` 占位示例。
 
 启动 MCP streamable HTTP 服务器：
 
 ```bash
-dsv-mcp config.json --host 127.0.0.1 --port 8765
+dsv-mcp --host 127.0.0.1 --port 8765
 ```
+
+默认读取项目根目录（与 `src/` 同级）的 `config.json`；也可显式传入其他路径：`dsv-mcp other.json`。
 
 然后在支持 MCP 的客户端中以 `http://127.0.0.1:8765/mcp` 接入即可，工具名为 `dsv_describe_image`。
 

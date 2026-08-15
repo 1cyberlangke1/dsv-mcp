@@ -294,10 +294,10 @@ def test_denormalize_edges():
 
 
 def test_parse_args_defaults():
-    from dsv_mcp.server import _parse_args
+    from dsv_mcp.server import PROJECT_ROOT, _parse_args
 
     config, host, port, token = _parse_args([])
-    assert config == "config.json"
+    assert config == str(PROJECT_ROOT / "config.json")
     assert host == "127.0.0.1"
     assert port == 8765
     assert token == ""

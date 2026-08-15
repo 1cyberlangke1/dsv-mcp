@@ -18,6 +18,8 @@ from dsv_mcp.proxy import ProxyError, ProxyManager
 
 
 MAX_IMAGE_EDGE = 1024
+# 项目根目录（与 src/ 同级），默认配置放这里
+PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 # 上传被风控（40301）后账号的冷却时长（秒）
 UPLOAD_COOLDOWN = 300.0
 # 验证码/风控挑战后账号的冷却时长（秒）
@@ -285,7 +287,8 @@ def serve_http(
 
 def _parse_args(argv: list[str]) -> tuple[str, str, int, str]:
     """解析 CLI 参数，返回 (config_path, host, port, token)。"""
-    config_path = "config.json"
+    root_config = PROJECT_ROOT / "config.json"
+    config_path = str(root_config) if root_config.exists() else "config.json"
     host = "127.0.0.1"
     port = 8765
     token = ""
