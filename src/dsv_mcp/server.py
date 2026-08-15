@@ -211,7 +211,7 @@ def build_mcp(server: DsvServer) -> MCPServer:
     mcp = MCPServer(name="dsv-mcp")
 
     @mcp.tool()
-    def describe_image(
+    def dsv_describe_image(
         image_path: str,
         question: str = "请详细描述这张图片的内容。",
         thinking_style: str = "grounding",
