@@ -27,7 +27,7 @@ class ProxyConfig(BaseModel):
     mode: Literal["none", "manual", "managed"] = "none"
     url: str | None = None  # manual 模式的代理地址，如 socks5://127.0.0.1:1080
     managed_subscription: str | None = None  # managed 模式的 vless 订阅 URL
-    managed_nodes: int = 30  # managed 模式参与自动选优的节点数（取订阅前 N 个）
+    managed_node: int = 0  # managed 模式使用的节点（订阅中的序号，从 0 开始）
     cache_dir: str | None = None  # 内核与生成配置的缓存目录（默认 %LOCALAPPDATA%/dsv-mcp）
 
 

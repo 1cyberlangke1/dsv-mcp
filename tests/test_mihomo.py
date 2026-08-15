@@ -46,20 +46,25 @@ def test_build_config_ech_policy():
     assert "query-server-name: \"cloudflare-ech.com\"" in yaml
     assert 'nameserver-policy:' in yaml
     assert '"cloudflare-ech.com": "https://dns.alidns.com/dns-query"' in yaml
-    assert "type: url-test" in yaml
-    assert "MATCH,auto" in yaml
+    assert "type: url-test" not in yaml
+    assert "MATCH,n0" in yaml
     assert "ws-opts:" in yaml
     assert '      path: "/"' in yaml
     assert '        Host: "worker.example.com"' in yaml
 
 
-def test_build_config_limit():
+def test_build_config_select_node():
     nodes = [parse_vless(VLESS_PLAIN) for _ in range(5)]
-    yaml = build_config(nodes, port=10808, limit=2)
-    assert yaml.count("type: vless") == 2
-    assert yaml.count('name: "n0"') == 1
-    assert yaml.count('name: "n1"') == 1
-    assert "n2" not in yaml
+    yaml = build_config(nodes, port=10808, index=3)
+    assert yaml.count("type: vless") == 1
+    assert yaml.count('name: "n3"') == 1
+    assert "MATCH,n3" in yaml
+
+
+def test_build_config_index_out_of_range():
+    nodes = [parse_vless(VLESS_PLAIN)]
+    with pytest.raises(ProxyError):
+        build_config(nodes, port=10808, index=5)
 
 
 def test_build_config_empty_raises():

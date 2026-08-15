@@ -65,11 +65,14 @@ def _yaml_str(value: str) -> str:
     return json.dumps(str(value), ensure_ascii=False)
 
 
-def build_config(nodes: list[dict], port: int, limit: int = 0) -> str:
-    """生成 mihomo clash yaml：前 limit 个节点进 url-test 组，全走代理。"""
-    picked = nodes[:limit] if limit > 0 else nodes
-    if not picked:
+def build_config(nodes: list[dict], port: int, index: int = 0) -> str:
+    """生成 mihomo clash yaml：只使用订阅中第 index 个节点，全走该节点。"""
+    if not nodes:
         raise ProxyError("没有可用节点")
+    if index < 0 or index >= len(nodes):
+        raise ProxyError(f"节点序号越界: {index} (共 {len(nodes)} 个)")
+    picked = nodes[index:index + 1]
+    name = f"n{index}"
     lines = [
         f"mixed-port: {port}",
         "allow-lan: false",
@@ -85,12 +88,11 @@ def build_config(nodes: list[dict], port: int, limit: int = 0) -> str:
     ]
     # ECH 需要把 query-server 域名走 DoH，否则拿不到 ECHConfigs
     policies: dict[str, str] = {}
-    for n in picked:
-        if not n.get("ech"):
-            continue
+    n = picked[0]
+    if n.get("ech"):
         parts = n["ech"].split("+", 1)
         if len(parts) == 2:
-            policies.setdefault(parts[0], parts[1])
+            policies[parts[0]] = parts[1]
     doh_servers = sorted(set(policies.values()))
     if doh_servers:
         lines.append("  nameserver:")
@@ -100,37 +102,24 @@ def build_config(nodes: list[dict], port: int, limit: int = 0) -> str:
         for qs, server in sorted(policies.items()):
             lines.append(f"    {_yaml_str(qs)}: {_yaml_str(server)}")
     lines += ["", "proxies:"]
-    for i, n in enumerate(picked):
-        name = f"n{i}"
-        lines.append(f"  - name: {_yaml_str(name)}")
-        lines.append(f"    server: {_yaml_str(n['server'])}")
-        lines.append(f"    port: {n['server_port']}")
-        lines.append("    type: vless")
-        lines.append(f"    uuid: {_yaml_str(n['uuid'])}")
-        lines.append("    tls: true")
-        lines.append(f"    servername: {_yaml_str(n['sni'] or n['host'])}")
-        lines.append(f"    client-fingerprint: {_yaml_str(n['fp'])}")
-        lines.append("    network: ws")
-        lines.append("    ws-opts:")
-        lines.append(f"      path: {_yaml_str(n['path'])}")
-        lines.append("      headers:")
-        lines.append(f"        Host: {_yaml_str(n['host'])}")
-        if n.get("ech") and n["ech"].split("+", 1)[0] in policies:
-            lines.append("    ech-opts:")
-            lines.append("      enable: true")
-            lines.append(f"      query-server-name: {_yaml_str(n['ech'].split('+', 1)[0])}")
-    lines += [
-        "",
-        "proxy-groups:",
-        "  - name: auto",
-        "    type: url-test",
-        "    url: https://www.gstatic.com/generate_204",
-        "    interval: 300",
-        "    proxies:",
-    ]
-    for i in range(len(picked)):
-        lines.append(f"      - {_yaml_str(f'n{i}')}")
-    lines += ["", "rules:", "  - MATCH,auto"]
+    lines.append(f"  - name: {_yaml_str(name)}")
+    lines.append(f"    server: {_yaml_str(n['server'])}")
+    lines.append(f"    port: {n['server_port']}")
+    lines.append("    type: vless")
+    lines.append(f"    uuid: {_yaml_str(n['uuid'])}")
+    lines.append("    tls: true")
+    lines.append(f"    servername: {_yaml_str(n['sni'] or n['host'])}")
+    lines.append(f"    client-fingerprint: {_yaml_str(n['fp'])}")
+    lines.append("    network: ws")
+    lines.append("    ws-opts:")
+    lines.append(f"      path: {_yaml_str(n['path'])}")
+    lines.append("      headers:")
+    lines.append(f"        Host: {_yaml_str(n['host'])}")
+    if n.get("ech") and n["ech"].split("+", 1)[0] in policies:
+        lines.append("    ech-opts:")
+        lines.append("      enable: true")
+        lines.append(f"      query-server-name: {_yaml_str(n['ech'].split('+', 1)[0])}")
+    lines += ["", "rules:", f"  - MATCH,{name}"]
     return "\n".join(lines) + "\n"
 
 

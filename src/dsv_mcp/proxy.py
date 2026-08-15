@@ -122,7 +122,11 @@ class ProxyManager:
             listen = self._pick_port()
             config_path = cache_dir / "config.yaml"
             config_path.write_text(
-                build_config(nodes, port=int(listen.rsplit(":", 1)[1]), limit=self.config.managed_nodes),
+                build_config(
+                    nodes,
+                    port=int(listen.rsplit(":", 1)[1]),
+                    index=self.config.managed_node,
+                ),
                 encoding="utf-8",
             )
             try:

@@ -19,7 +19,7 @@ def test_config_parses_all_modes(tmp_path):
                 "proxy": {
                     "mode": "managed",
                     "managed_subscription": "https://example.com/sub",
-                    "managed_nodes": 10,
+                    "managed_node": 3,
                 },
             }
         ),
@@ -28,7 +28,7 @@ def test_config_parses_all_modes(tmp_path):
     config = DsvConfig.load(cfg)
     assert config.proxy.mode == "managed"
     assert config.proxy.managed_subscription == "https://example.com/sub"
-    assert config.proxy.managed_nodes == 10
+    assert config.proxy.managed_node == 3
     assert config.proxy.mode in ("none", "manual", "managed")
 
 
