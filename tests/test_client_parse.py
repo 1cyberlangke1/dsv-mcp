@@ -7,6 +7,7 @@ import pytest
 from dsv_mcp.client import (
     DeepSeekClient,
     DeepSeekError,
+    detect_captcha_challenge,
     extract_create_session_id,
     extract_response_status,
     extract_upload_file_result,
@@ -133,6 +134,61 @@ def test_pow_recreated_each_call(monkeypatch):
     assert h1 == "header-1"
     assert h2 == "header-2"
     assert calls["n"] == 2
+
+
+def test_detect_captcha_image_signal():
+    resp = {
+        "code": 0,
+        "data": {
+            "biz_code": 0,
+            "biz_data": {
+                "detail": {"bg": "https://captcha.example/bg.png", "rid": "r1"},
+            },
+        },
+    }
+    ch = detect_captcha_challenge(resp)
+    assert ch is not None
+    assert ch["image_url"] == "https://captcha.example/bg.png"
+
+
+def test_detect_captcha_instruction_signal():
+    resp = {"code": 0, "data": {"biz_code": 0, "biz_data": {"instruction": "请点击包含飞机的图片"}}}
+    ch = detect_captcha_challenge(resp)
+    assert ch is not None
+    assert ch["instruction"] == "请点击包含飞机的图片"
+
+
+def test_detect_captcha_keyword_with_failure():
+    resp = {"code": 0, "data": {"biz_code": 40029, "biz_msg": "risk control triggered"}}
+    ch = detect_captcha_challenge(resp)
+    assert ch is not None
+
+
+def test_detect_captcha_none_on_normal():
+    resp = {"code": 0, "data": {"biz_code": 0, "biz_data": {"id": "ok"}}}
+    assert detect_captcha_challenge(resp) is None
+
+
+def test_create_session_raises_captcha(monkeypatch):
+    class FakeHttp:
+        def post_json(self, url, payload, headers=None, timeout=60):
+            return {
+                "code": 0,
+                "data": {
+                    "biz_code": 0,
+                    "biz_data": {
+                        "detail": {
+                            "bg": "https://captcha.example/x.png",
+                            "instruction": "选择所有的红绿灯",
+                        }
+                    },
+                },
+            }
+
+    client = DeepSeekClient(FakeHttp())
+    with pytest.raises(DeepSeekError) as exc:
+        client.create_session(None, "tok")
+    assert exc.value.code == "captcha_required"
 
 
 def test_delete_failure_queued_and_retried(monkeypatch):

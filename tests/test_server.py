@@ -75,6 +75,22 @@ def test_upload_rate_limited_sets_cooldown(tmp_path, monkeypatch):
     server.close()
 
 
+def test_captcha_required_sets_cooldown(tmp_path, monkeypatch):
+    from dsv_mcp.server import CAPTCHA_COOLDOWN
+
+    server, img = _make_server(tmp_path)
+    monkeypatch.setattr(server.client, "login", lambda account, device_id=None: "tok")
+
+    def boom(*args, **kwargs):
+        raise DeepSeekError("captcha_required", "触发验证码/风控: captcha")
+
+    monkeypatch.setattr(server.client, "describe_image", boom)
+    result = server.describe_image(img, "q")
+    assert "captcha_required" in result
+    assert server._cooldown["a@b.c"] > time.monotonic() + CAPTCHA_COOLDOWN - 60
+    server.close()
+
+
 def test_acquire_skips_cooldown_account(tmp_path):
     server, _ = _make_server(tmp_path, emails=("a@b.c", "c@d.e"))
     server._cooldown["a@b.c"] = time.monotonic() + 9999

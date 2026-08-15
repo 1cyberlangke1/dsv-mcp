@@ -21,6 +21,8 @@ from dsv_mcp.proxy import ProxyError, ProxyManager
 MAX_IMAGE_EDGE = 1024
 # 上传被风控（40301）后账号的冷却时长（秒）
 UPLOAD_COOLDOWN = 300.0
+# 验证码/风控挑战后账号的冷却时长（秒）
+CAPTCHA_COOLDOWN = 1800.0
 # 模式标题：提示词 = 标题 + 换行 + 用户问题
 GROUNDING_TITLE = "[Think with Grounding]"
 POINTING_TITLE = "[Think with Pointing]"
@@ -196,6 +198,8 @@ class DsvServer:
                 self._tokens.pop(ident, None)
             elif exc.code == "upload_rate_limited":
                 self._cooldown[ident] = time.monotonic() + UPLOAD_COOLDOWN
+            elif exc.code == "captcha_required":
+                self._cooldown[ident] = time.monotonic() + CAPTCHA_COOLDOWN
             return f"识图失败: {exc.code} {exc}"
         except Exception as exc:
             return f"识图失败: {type(exc).__name__}: {exc}"

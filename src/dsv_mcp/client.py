@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import time
 import uuid
 from typing import Any
@@ -131,6 +132,96 @@ def extract_upload_file_result(resp: dict[str, Any]) -> dict[str, Any]:
     return result
 
 
+CAPTCHA_TERMS = re.compile(
+    r"(?i)captcha|hcaptcha|shumei|verification|verify|risk|验证码|数美|风控|验证"
+)
+
+
+def detect_captcha_challenge(resp: Any) -> dict[str, str] | None:
+    """递归扫描响应里的验证码/风控挑战信号，返回 {image_url, instruction, rid, captcha_uuid}。"""
+    if not isinstance(resp, dict):
+        return None
+    return _find_challenge(resp, 0)
+
+
+def _find_challenge(value: Any, depth: int) -> dict[str, str] | None:
+    if depth > 8:
+        return None
+    if isinstance(value, dict):
+        ch = _challenge_from_map(value)
+        if ch is not None:
+            return ch
+        for child in value.values():
+            found = _find_challenge(child, depth + 1)
+            if found is not None:
+                return found
+    elif isinstance(value, list):
+        for item in value:
+            found = _find_challenge(item, depth + 1)
+            if found is not None:
+                return found
+    return None
+
+
+def _challenge_from_map(m: dict[str, Any]) -> dict[str, str] | None:
+    detail = m.get("detail") if isinstance(m.get("detail"), dict) else m
+    image_url = _first_nonempty(
+        detail.get("bg"),
+        detail.get("imageUrl"),
+        detail.get("image"),
+        detail.get("captchaImage"),
+        detail.get("url"),
+        m.get("imageUrl"),
+        m.get("captchaImage"),
+    )
+    instruction = _join_nonempty(
+        detail.get("order"),
+        detail.get("instruction"),
+        detail.get("comment"),
+        m.get("order"),
+        m.get("instruction"),
+    )
+    rid = _first_nonempty(detail.get("rid"), m.get("rid"))
+    captcha_uuid = _first_nonempty(
+        detail.get("captchaUuid"),
+        detail.get("captcha_uuid"),
+        m.get("captchaUuid"),
+        m.get("captcha_uuid"),
+    )
+    data = m.get("data") if isinstance(m.get("data"), dict) else {}
+    biz_code = int_from(data.get("biz_code")) or int_from(m.get("code"))
+    msg_text = f"{m.get('msg') or ''} {m.get('biz_msg') or ''}".strip()
+    if msg_text == "" and data:
+        msg_text = f"{data.get('biz_msg') or ''} {data.get('msg') or ''}".strip()
+    has_keyword = CAPTCHA_TERMS.search(msg_text) is not None
+    has_failure = biz_code != 0
+    if image_url == "" and instruction == "" and not (has_failure and has_keyword):
+        return None
+    return {
+        "image_url": image_url,
+        "instruction": instruction,
+        "rid": rid,
+        "captcha_uuid": captcha_uuid,
+    }
+
+
+def _first_nonempty(*values: Any) -> str:
+    for v in values:
+        s = str(v).strip() if v is not None else ""
+        if s != "":
+            return s
+    return ""
+
+
+def _join_nonempty(*values: Any) -> str:
+    parts: list[str] = []
+    for v in values:
+        s = str(v).strip() if v is not None else ""
+        if s and s not in parts:
+            parts.append(s)
+    return " / ".join(parts)
+
+
 class DeepSeekClient:
     def __init__(self, http: HttpClient):
         self.http = http
@@ -181,6 +272,7 @@ class DeepSeekClient:
         resp = self.http.post_json(
             CREATE_POW_URL, {"target_path": target_path}, headers=self._auth_headers(token)
         )
+        self._raise_if_captcha(resp, "获取 PoW")
         code, biz_code, _, biz_msg = extract_response_status(resp)
         if code != 0 or biz_code != 0:
             raise DeepSeekError("pow_failed", f"获取 PoW 失败: {biz_msg or code}")
@@ -197,6 +289,7 @@ class DeepSeekClient:
     def create_session(self, account: Account, token: str) -> str:
         """CreateSession：空 payload。"""
         resp = self.http.post_json(CREATE_SESSION_URL, {}, headers=self._auth_headers(token))
+        self._raise_if_captcha(resp, "创建会话")
         code, biz_code, _, biz_msg = extract_response_status(resp)
         if code != 0 or biz_code != 0:
             raise DeepSeekError("session_failed", f"创建会话失败: {biz_msg or code}")
@@ -243,6 +336,7 @@ class DeepSeekClient:
         resp = self.http.post_multipart(
             UPLOAD_URL, files={"file": (filename, data, content_type)}, headers=headers
         )
+        self._raise_if_captcha(resp, "上传文件")
         code, biz_code, _, biz_msg = extract_response_status(resp)
         if code != 0 or biz_code != 0:
             if biz_code == 40301:
@@ -417,6 +511,14 @@ class DeepSeekClient:
     def _auth_headers(self, token: str) -> dict[str, str]:
         """authHeaders。"""
         return {"authorization": f"Bearer {token}"}
+
+    @staticmethod
+    def _raise_if_captcha(resp: dict[str, Any], op: str) -> None:
+        """响应含验证码/风控挑战信号时抛 captcha_required。"""
+        ch = detect_captcha_challenge(resp)
+        if ch is not None:
+            detail = ch["instruction"] or ch["image_url"] or "captcha challenge"
+            raise DeepSeekError("captcha_required", f"{op} 触发验证码/风控: {detail}")
 
     def _session_headers(self, token: str, session_id: str) -> dict[str, str]:
         return {
