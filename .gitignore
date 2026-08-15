@@ -1,0 +1,73 @@
+# 规划 / 交接 / 进度文档（不进仓库）
+AGENTS.md
+HANDOFF*.md
+CLAUDE.md
+PLAN*.md
+TODO.md
+task_plan.md
+findings.md
+progress.md
+TEST_PLAN*.md
+
+# 临时目录
+tmp/
+
+# 日志 / 运行产物
+logs/
+*.log
+test-results/
+
+# 敏感信息 / 凭据（永不提交）
+.env
+*.env
+*.pem
+*.key
+*.jks
+secrets.*
+credentials.*
+config.json
+state.json
+*.state.json
+
+# 系统 / 编辑器杂项
+Thumbs.db
+Desktop.ini
+.DS_Store
+.vscode/
+.vs/
+*.swp
+*~
+*.tmp
+*.bak
+
+# 本地打包产物
+*.zip
+*.7z
+*.rar
+
+# Python 字节码 / 缓存
+__pycache__/
+*.py[cod]
+*.so
+
+# Python 构建产物
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# 虚拟环境
+.venv/
+venv/
+env/
+ENV/
+
+# 测试 / 静态检查缓存
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.mypy_cache/
+.ruff_cache/
+.tox/
+.nox/
