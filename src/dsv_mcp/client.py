@@ -134,6 +134,7 @@ def extract_upload_file_result(resp: dict[str, Any]) -> dict[str, Any]:
 class DeepSeekClient:
     def __init__(self, http: HttpClient):
         self.http = http
+        self._pending_deletes: list[tuple[Account, str, str]] = []
 
     # ---------- 认证 ----------
 
@@ -301,6 +302,7 @@ class DeepSeekClient:
         auto_delete: bool = True,
     ) -> dict[str, Any]:
         """单轮识图：建会话 → 上传 → 就绪 → vision 对话 →（可选）删会话。"""
+        self._flush_pending_deletes()
         session_id = self.create_session(account, token)
         try:
             file_id = self.upload_file(account, token, filename, content_type, image_bytes)
@@ -319,7 +321,17 @@ class DeepSeekClient:
                 try:
                     self.delete_session(account, token, session_id)
                 except DeepSeekError:
-                    pass
+                    self._pending_deletes.append((account, token, session_id))
+
+    def _flush_pending_deletes(self) -> None:
+        """补删上次删除失败的会话：成功移除，失败保留等下次。"""
+        remaining: list[tuple[Account, str, str]] = []
+        for account, token, session_id in self._pending_deletes:
+            try:
+                self.delete_session(account, token, session_id)
+            except DeepSeekError:
+                remaining.append((account, token, session_id))
+        self._pending_deletes = remaining
 
     def call_completion(
         self,

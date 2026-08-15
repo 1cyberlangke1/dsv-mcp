@@ -133,3 +133,39 @@ def test_pow_recreated_each_call(monkeypatch):
     assert h1 == "header-1"
     assert h2 == "header-2"
     assert calls["n"] == 2
+
+
+def test_delete_failure_queued_and_retried(monkeypatch):
+    from dsv_mcp import client as client_mod
+
+    class _NoopHttp:
+        pass
+
+    c = client_mod.DeepSeekClient(_NoopHttp())
+    deletes = {"n": 0}
+
+    def fake_create(account, token):
+        return f"sess-{deletes['n'] + 1}"
+
+    def fake_delete(account, token, session_id):
+        deletes["n"] += 1
+        if deletes["n"] == 1:
+            raise DeepSeekError("session_delete_failed", "boom")
+
+    monkeypatch.setattr(c, "create_session", fake_create)
+    monkeypatch.setattr(c, "delete_session", fake_delete)
+    monkeypatch.setattr(c, "upload_file", lambda *a, **k: "f1")
+    monkeypatch.setattr(c, "wait_for_uploaded_file", lambda *a, **k: None)
+    monkeypatch.setattr(
+        c,
+        "call_completion",
+        lambda *a, **k: {"text": "ok", "thinking": "", "message_id": 1},
+    )
+    # 第一次：删除失败 → 入队
+    c.describe_image(None, "tok", b"x", "q")
+    assert len(c._pending_deletes) == 1
+    assert c._pending_deletes[0][2] == "sess-1"
+    # 第二次：先补删成功 → 队列清空，本次会话也删掉
+    c.describe_image(None, "tok", b"x", "q")
+    assert c._pending_deletes == []
+    assert deletes["n"] == 3
