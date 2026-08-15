@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dsv_mcp.sse import (
     collect_stream,
+    extract_json_error,
     extract_muted_json_until,
     parse_deepseek_content_line,
     parse_deepseek_sse_line,
@@ -61,6 +62,28 @@ def test_collect_stream_detects_muted_json():
 def test_collect_stream_normal_has_no_mute():
     lines = ['data: {"p": "response/status", "v": "FINISHED"}']
     result = collect_stream(lines, thinking_enabled=False)
+    assert result.mute_until is None
+
+
+def test_extract_json_error_biz_code():
+    line = '{"code":0,"msg":"","data":{"biz_code":28,"biz_msg":"ref file audit rejected"}}'
+    assert extract_json_error(line) == "ref file audit rejected"
+
+
+def test_extract_json_error_top_code():
+    line = '{"code":1,"msg":"boom"}'
+    assert extract_json_error(line) == "boom"
+
+
+def test_extract_json_error_ok_line():
+    assert extract_json_error('{"code":0,"data":{"biz_code":0}}') is None
+    assert extract_json_error('data: {"p":"response/status"}') is None
+
+
+def test_collect_stream_sets_upstream_error_on_json_reject():
+    lines = ['{"code":0,"msg":"","data":{"biz_code":28,"biz_msg":"ref file audit rejected"}}']
+    result = collect_stream(lines, thinking_enabled=False)
+    assert result.upstream_error == "ref file audit rejected"
     assert result.mute_until is None
 
 

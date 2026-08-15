@@ -75,6 +75,31 @@ def extract_muted_json_until(line: str) -> float | None:
     return 0.0
 
 
+def extract_json_error(line: str) -> str | None:
+    """非 SSE JSON 行里的业务错误（code/biz_code 非 0），返回人话错误文本，无则 None。
+
+    上游拒绝引用文件时 completion 返回 JSON 而非 SSE：
+    {"code":0,"data":{"biz_code":28,"biz_msg":"ref file audit rejected",...}}
+    """
+    s = line.strip()
+    if not s.startswith("{"):
+        return None
+    try:
+        obj = json.loads(s)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(obj, dict):
+        return None
+    code = obj.get("code")
+    data = obj.get("data") if isinstance(obj.get("data"), dict) else {}
+    biz_code = data.get("biz_code")
+    biz_msg = str(data.get("biz_msg") or "").strip()
+    top_msg = str(obj.get("msg") or "").strip()
+    if code not in (0, None) or (isinstance(biz_code, int) and biz_code != 0):
+        return biz_msg or top_msg or str(biz_code or code)
+    return None
+
+
 def is_fragment_status_path(path: str) -> bool:
     """isFragmentStatusPath。"""
     if path == "" or path == "response/status":
@@ -537,6 +562,12 @@ def collect_stream(lines, thinking_enabled: bool) -> CollectResult:
             if mute_until is not None:
                 result.mute_until = mute_until
                 break
+        if upstream_error == "":
+            json_error = extract_json_error(line)
+            if json_error:
+                upstream_error = json_error
+                stopped = True
+                continue
         chunk, done, parsed = parse_deepseek_sse_line(line)
         if parsed and not done:
             mid = observe_response_message_id(chunk)
