@@ -93,3 +93,43 @@ def test_upload_other_error_keeps_code(monkeypatch):
     with pytest.raises(DeepSeekError) as exc:
         client.upload_file(None, "tok", "a.jpg", "image/jpeg", b"x")
     assert exc.value.code == "upload_failed"
+
+
+def test_pow_recreated_each_call(monkeypatch):
+    import dsv_mcp.client as client_mod
+
+    calls = {"n": 0}
+
+    class FakeHttp:
+        def post_json(self, url, payload, headers=None, timeout=60):
+            calls["n"] += 1
+            return {
+                "code": 0,
+                "data": {
+                    "biz_code": 0,
+                    "biz_data": {
+                        "challenge": {
+                            "algorithm": "DeepSeekHashV1",
+                            "challenge": "c",
+                            "salt": "s",
+                            "expire_at": 1786807428328,
+                            "difficulty": 1000,
+                            "signature": "sig",
+                            "target_path": "/api/v0/file/upload_file",
+                        }
+                    },
+                },
+            }
+
+    client = client_mod.DeepSeekClient(FakeHttp())
+
+    class FakeSolver:
+        def solve_and_build_header(self, challenge):
+            return f"header-{calls['n']}"
+
+    monkeypatch.setattr(client_mod, "wasm_solver", lambda: FakeSolver())
+    h1 = client.get_pow_for_target(None, "tok", "/x")
+    h2 = client.get_pow_for_target(None, "tok", "/x")
+    assert h1 == "header-1"
+    assert h2 == "header-2"
+    assert calls["n"] == 2

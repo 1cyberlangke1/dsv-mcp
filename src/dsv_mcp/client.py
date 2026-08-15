@@ -134,7 +134,6 @@ def extract_upload_file_result(resp: dict[str, Any]) -> dict[str, Any]:
 class DeepSeekClient:
     def __init__(self, http: HttpClient):
         self.http = http
-        self._pow_cache: dict[tuple[str, str], tuple[float, str]] = {}
 
     # ---------- 认证 ----------
 
@@ -177,14 +176,7 @@ class DeepSeekClient:
     # ---------- PoW ----------
 
     def get_pow_for_target(self, account: Account, token: str, target_path: str) -> str:
-        """获取并求解 PoW（challenge 一次性，取走即删）。"""
-        cache_key = (account.identifier(), target_path)
-        cached = self._pow_cache.get(cache_key)
-        if cached:
-            expire_at, header = cached
-            self._pow_cache.pop(cache_key, None)
-            if expire_at > time.time() + 30:
-                return header
+        """获取并求解 PoW（challenge 严格一次性，每次请求都必须重新创建）。"""
         resp = self.http.post_json(
             CREATE_POW_URL, {"target_path": target_path}, headers=self._auth_headers(token)
         )
@@ -197,7 +189,6 @@ class DeepSeekClient:
         if not challenge.get("challenge"):
             raise DeepSeekError("pow_failed", "PoW 响应缺少 challenge")
         header = wasm_solver().solve_and_build_header(challenge)
-        self._pow_cache[cache_key] = (float(challenge.get("expire_at") or 0), header)
         return header
 
     # ---------- 会话 ----------
