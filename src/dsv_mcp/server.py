@@ -505,14 +505,14 @@ def serve_stdio_autostart(
     anyio.run(mcp.run_stdio_async)
 
 
-def _parse_args(argv: list[str]) -> tuple[str, bool, str, int, str]:
-    """解析 CLI 参数，返回 (config_path, autostart, host, port, token)。"""
+def _parse_args(argv: list[str]) -> tuple[str, bool, str | None, int | None, str | None]:
+    """解析 CLI 参数，返回 (config_path, autostart, host, port, token)；未指定的项为 None。"""
     root_config = PROJECT_ROOT / "config.json"
     config_path = str(root_config) if root_config.exists() else "config.json"
     autostart = False
-    host = "127.0.0.1"
-    port = 8765
-    token = ""
+    host: str | None = None
+    port: int | None = None
+    token: str | None = None
     i = 0
     while i < len(argv):
         arg = argv[i]
@@ -535,6 +535,10 @@ def _parse_args(argv: list[str]) -> tuple[str, bool, str, int, str]:
 
 def main() -> None:
     config_path, autostart, host, port, token = _parse_args(sys.argv[1:])
+    cfg = DsvConfig.load(config_path)
+    host = host or cfg.server.host
+    port = port or cfg.server.port
+    token = token or cfg.server.token
     if autostart:
         serve_stdio_autostart(config_path, host=host, port=port, token=token)
         return

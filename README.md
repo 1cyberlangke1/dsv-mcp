@@ -15,6 +15,7 @@ DeepSeek 网页版识图模式（Vision）的 MCP 服务器。通过逆向网页
 - [核心能力](#核心能力)
 - [快速开始](#快速开始)
 - [HTTP 部署](#http-部署)
+- [配置到 Codex](#配置到-codex)
 - [配置说明](#配置说明)
 - [思考模式](#思考模式)
 - [代理模式](#代理模式)
@@ -69,6 +70,32 @@ dsv-mcp config.json --host 127.0.0.1 --port 8765
 - `--token <secret>`：可选；配置后所有请求需带 `Authorization: Bearer <secret>`，否则返回 401。多客户端部署建议设置
 - MCP 端点路径固定为 `/mcp`，客户端按 `http://<host>:<port>/mcp` 接入
 
+## 配置到 Codex
+
+在 `~/.codex/config.toml` 里加一段（路径换成你自己的）：
+
+```toml
+[mcp_servers.dsv-mcp]
+command = 'D:\Git_Repository\dsv-mcp\.venv\Scripts\python.exe'
+args = ['-m', 'dsv_mcp', 'D:\Git_Repository\dsv-mcp\config.json', '--autostart']
+tool_timeout_sec = 300
+startup_timeout_sec = 180
+default_tools_approval_mode = "auto"
+```
+
+说明：
+
+- 用 `python.exe -m dsv_mcp` 而不是 `dsv-mcp.exe`：Codex 在 Windows 上直接 spawn
+  console script 可执行文件不稳定，`python -m` 最稳
+- `--autostart`：检测到共享 HTTP 实例没跑时自动后台拉起（默认 `127.0.0.1:8765`），
+  多个 Codex 会话共享同一账号池；实例空闲 10 分钟自动退出，不留孤儿进程
+- `startup_timeout_sec`：Codex 对 MCP 服务器默认只有 10 秒启动预算，调大避免冷启动被掐
+- Windows 下 Codex 只给子进程传最小环境变量，本项目已在入口自修复
+  （`SYSTEMROOT` / `PROCESSOR_ARCHITECTURE`），无需额外配置 `env_vars`
+- 监听地址 / 端口 / 鉴权 token 也可写在 `config.json` 的 `server` 段
+  （`--host` / `--port` / `--token` 命令行参数优先）
+- 改完配置后需**新开** Codex 会话才生效
+
 ## 配置说明
 
 ### accounts
@@ -115,6 +142,24 @@ managed 示例：
 ```
 
 mihomo 内核与生成的配置缓存在 `%LOCALAPPDATA%/dsv-mcp/managed`，不污染项目目录。
+
+### server
+
+HTTP 服务监听配置，命令行参数未指定时从这里取：
+
+```json
+{
+  "server": {
+    "host": "127.0.0.1",
+    "port": 8765,
+    "token": ""
+  }
+}
+```
+
+- `host` / `port`：监听地址与端口（默认 `127.0.0.1:8765`），`--host` / `--port` 参数优先
+- `token`：可选；配置后所有请求需带 `Authorization: Bearer <token>`，否则返回 401，
+  `--token` 参数优先
 
 ## 思考模式
 

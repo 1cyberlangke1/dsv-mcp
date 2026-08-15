@@ -32,11 +32,20 @@ class ProxyConfig(BaseModel):
     cache_dir: str | None = None  # 内核与生成配置的缓存目录（默认 %LOCALAPPDATA%/dsv-mcp）
 
 
+class ServerConfig(BaseModel):
+    """HTTP 服务配置：命令行参数未指定时从这里取。"""
+
+    host: str = "127.0.0.1"
+    port: int = 8765
+    token: str = ""  # Bearer 鉴权密钥，配置后所有请求需带 Authorization
+
+
 class DsvConfig(BaseModel):
     """总配置。"""
 
     accounts: list[Account] = Field(default_factory=list)
     proxy: ProxyConfig = Field(default_factory=ProxyConfig)
+    server: ServerConfig = Field(default_factory=ServerConfig)
 
     @classmethod
     def load(cls, path: str | Path) -> "DsvConfig":

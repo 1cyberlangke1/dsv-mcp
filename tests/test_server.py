@@ -360,9 +360,9 @@ def test_parse_args_defaults():
     config, autostart, host, port, token = _parse_args([])
     assert config == str(PROJECT_ROOT / "config.json")
     assert autostart is False
-    assert host == "127.0.0.1"
-    assert port == 8765
-    assert token == ""
+    assert host is None
+    assert port is None
+    assert token is None
 
 
 def test_parse_args_full():

@@ -68,3 +68,27 @@ def test_banned_flag_roundtrip(tmp_path):
 
 def test_banned_flag_defaults_false():
     assert Account(email="a@b.c", password="p").banned is False
+
+
+def test_server_section_roundtrip(tmp_path):
+    cfg = tmp_path / "config.json"
+    cfg.write_text(
+        json.dumps(
+            {
+                "accounts": [{"email": "a@b.c", "password": "p"}],
+                "server": {"host": "0.0.0.0", "port": 9000, "token": "s3cret"},
+            }
+        ),
+        encoding="utf-8",
+    )
+    config = DsvConfig.load(cfg)
+    assert config.server.host == "0.0.0.0"
+    assert config.server.port == 9000
+    assert config.server.token == "s3cret"
+    config.save(cfg)
+    reloaded = DsvConfig.load(cfg)
+    assert reloaded.server.port == 9000
+
+
+def test_server_section_defaults():
+    assert DsvConfig(accounts=[{"email": "a@b.c", "password": "p"}]).server.port == 8765
