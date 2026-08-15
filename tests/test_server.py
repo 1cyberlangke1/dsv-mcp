@@ -98,3 +98,34 @@ def test_acquire_all_cooldown_raises(tmp_path):
     with pytest.raises(DeepSeekError):
         server._acquire()
     server.close()
+
+
+def test_thinking_style_inserts_prompt(tmp_path, monkeypatch):
+    from dsv_mcp.server import GROUNDING_TITLE, POINTING_TITLE
+
+    server, img = _make_server(tmp_path)
+    monkeypatch.setattr(server.client, "login", lambda account, device_id=None: "tok")
+    captured = {}
+
+    def fake_describe(account, token, image_bytes, prompt, **kwargs):
+        captured["prompt"] = prompt
+        captured["thinking_enabled"] = kwargs.get("thinking_enabled")
+        return {"text": "ok", "thinking": "think", "message_id": 1}
+
+    monkeypatch.setattr(server.client, "describe_image", fake_describe)
+    result = server.describe_image(img, "问题", thinking_style="grounding")
+    assert captured["prompt"] == f"{GROUNDING_TITLE}\n问题"
+    assert captured["thinking_enabled"] is True
+    assert "[思考过程]" in result
+    server.describe_image(img, "问题", thinking_style="pointing")
+    assert captured["prompt"] == f"{POINTING_TITLE}\n问题"
+    server.describe_image(img, "问题", thinking_style="none")
+    assert captured["prompt"] == "问题"
+    server.close()
+
+
+def test_thinking_style_invalid(tmp_path):
+    server, img = _make_server(tmp_path)
+    result = server.describe_image(img, "问题", thinking_style="bogus")
+    assert "无效 thinking_style" in result
+    server.close()

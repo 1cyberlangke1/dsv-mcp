@@ -19,6 +19,10 @@ from dsv_mcp.proxy import ProxyError, ProxyManager
 MAX_IMAGE_EDGE = 1024
 # 上传被风控（40301）后账号的冷却时长（秒）
 UPLOAD_COOLDOWN = 300.0
+# 模式标题：提示词 = 标题 + 换行 + 用户问题
+GROUNDING_TITLE = "[Think with Grounding]"
+POINTING_TITLE = "[Think with Pointing]"
+THINKING_STYLES = ("grounding", "pointing", "none")
 
 
 def compress_image(image_bytes: bytes, max_edge: int = MAX_IMAGE_EDGE) -> tuple[bytes, str]:
@@ -86,9 +90,11 @@ class DsvServer:
         self,
         image_path: str,
         question: str = "请详细描述这张图片的内容。",
-        include_thinking: bool = False,
+        thinking_style: str = "grounding",
     ) -> str:
         """识图主流程：取账号 → 登录态 → 压缩 → 单轮识图 → 语义化返回。"""
+        if thinking_style not in THINKING_STYLES:
+            return f"无效 thinking_style: {thinking_style}（可选 grounding/pointing/none）"
         image_bytes = Path(image_path).read_bytes()
         data, content_type = compress_image(image_bytes)
         try:
@@ -97,18 +103,24 @@ class DsvServer:
             return f"账号不可用: {exc.code} {exc}"
         try:
             token = self._token_for(ident)
+            if thinking_style == "grounding":
+                prompt = f"{GROUNDING_TITLE}\n{question}"
+            elif thinking_style == "pointing":
+                prompt = f"{POINTING_TITLE}\n{question}"
+            else:
+                prompt = question
             result = self.client.describe_image(
                 account,
                 token,
                 data,
-                prompt=question,
+                prompt=prompt,
                 filename="image.jpg",
                 content_type=content_type,
-                thinking_enabled=include_thinking,
+                thinking_enabled=True,
                 auto_delete=True,
             )
             parts = [result["text"]]
-            if include_thinking and result["thinking"]:
+            if result["thinking"]:
                 parts.append(f"\n\n[思考过程]\n{result['thinking']}")
             return "\n".join(parts)
         except DeepSeekError as exc:
@@ -130,10 +142,10 @@ def build_mcp(server: DsvServer) -> MCPServer:
     def describe_image(
         image_path: str,
         question: str = "请详细描述这张图片的内容。",
-        include_thinking: bool = False,
+        thinking_style: str = "grounding",
     ) -> str:
-        """使用 DeepSeek 识图模式描述图片，返回文字描述。"""
-        return server.describe_image(image_path, question, include_thinking)
+        """使用 DeepSeek 识图模式描述图片；thinking_style: grounding/pointing/none。"""
+        return server.describe_image(image_path, question, thinking_style)
 
     return mcp
 
