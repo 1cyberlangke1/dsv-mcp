@@ -185,25 +185,36 @@ def _server_with_fake_describe(tmp_path, monkeypatch, text, thinking):
 
 
 def test_return_modes_none_plain_text(tmp_path, monkeypatch):
+    from dsv_mcp.server import _raw_tag
+
     server, img = _server_with_fake_describe(
-        tmp_path, monkeypatch, "最终回答", "思考内容 <|point|>[[1,2]]<|/point|>"
+        tmp_path,
+        monkeypatch,
+        "最终回答",
+        f"思考内容 {_raw_tag('point')}[[1,2]]{_raw_tag('/point')}",
     )
     result = server.describe_image(img, "q", thinking_style="none")
     assert result == "最终回答"
     server.close()
 
 
-def test_return_modes_grounding_appends_json(tmp_path, monkeypatch):
+def test_return_modes_grounding_appends_ref_box_lines(tmp_path, monkeypatch):
+    from dsv_mcp.server import _norm_tag, _raw_tag
+
     server, img = _server_with_fake_describe(
         tmp_path,
         monkeypatch,
         "最终回答",
-        "看到 <｜｜ref｜｜>手掌<｜｜/ref｜｜><｜｜box｜｜>[[1,2,3,4]]<｜｜/box｜｜>",
+        f"看到 {_raw_tag('ref')}手掌{_raw_tag('/ref')}"
+        f"{_raw_tag('box')}[[1,2,3,4]]{_raw_tag('/box')}",
+    )
+    expected = (
+        "最终回答\n\n"
+        f"{_norm_tag('ref')}手掌{_norm_tag('/ref')}"
+        f"{_norm_tag('box')}[[1,2,3,4]]{_norm_tag('/box')}"
     )
     result = server.describe_image(img, "q", thinking_style="grounding")
-    assert result.startswith("最终回答\n\n[Grounding]\n")
-    payload = json.loads(result.rsplit("\n", 1)[1])
-    assert payload == [{"ref": "手掌", "boxes": [[1, 2, 3, 4]]}]
+    assert result == expected
     server.close()
 
 
@@ -215,11 +226,17 @@ def test_return_modes_grounding_no_markers_falls_back(tmp_path, monkeypatch):
 
 
 def test_return_modes_pointing_with_points_returns_thinking(tmp_path, monkeypatch):
+    from dsv_mcp.server import _norm_tag, _raw_tag
+
     server, img = _server_with_fake_describe(
-        tmp_path, monkeypatch, "最终回答", "路径 <｜｜point｜｜>[[1,2],[3,4]]<｜｜/point｜｜>"
+        tmp_path,
+        monkeypatch,
+        "最终回答",
+        f"路径 {_raw_tag('point')}[[1,2],[3,4]]{_raw_tag('/point')}",
     )
+    expected = f"路径 {_norm_tag('point')}[[1,2],[3,4]]{_norm_tag('/point')}"
     result = server.describe_image(img, "q", thinking_style="pointing")
-    assert result == "路径 <｜｜point｜｜>[[1,2],[3,4]]<｜｜/point｜｜>"
+    assert result == expected
     server.close()
 
 

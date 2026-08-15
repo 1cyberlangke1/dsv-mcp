@@ -26,6 +26,19 @@ GROUNDING_TITLE = "[Think with Grounding]"
 POINTING_TITLE = "[Think with Pointing]"
 THINKING_STYLES = ("grounding", "pointing", "none")
 
+# 视觉原语标记统一从这里构造，避免手写弄混
+_FF = "\uff5c"  # U+FF5C 全角竖线（模型实测输出形态，每边 2 个）
+
+
+def _raw_tag(name: str) -> str:
+    """实测字节形态标记：< ｜｜name｜｜ >（每边 2 个全角 U+FF5C）。"""
+    return f"<{_FF}{_FF}{name}{_FF}{_FF}>"
+
+
+def _norm_tag(name: str) -> str:
+    """归一化标准形态标记：<|name|>（单半角竖线）。"""
+    return f"<|{name}|>"
+
 
 def _normalize_primitives(text: str) -> str:
     """把思考链里的视觉原语标记归一化为标准形态。
@@ -59,6 +72,18 @@ def has_point_primitive(thinking: str) -> bool:
     """思考链里是否出现 point 标记。"""
     norm = _normalize_primitives(thinking)
     return bool(re.search(r"<\|point\|>", norm))
+
+
+def _format_groundings(groundings: list[dict]) -> str:
+    """把 ref+box 配对格式化为 <|ref|>对象<|/ref|><|box|>[[...]]<|/box|> 行。"""
+    lines = []
+    for g in groundings:
+        boxes = json.dumps(g["boxes"], ensure_ascii=False, separators=(",", ":"))
+        lines.append(
+            f"{_norm_tag('ref')}{g['ref']}{_norm_tag('/ref')}"
+            f"{_norm_tag('box')}{boxes}{_norm_tag('/box')}"
+        )
+    return "\n".join(lines)
 
 
 def compress_image(image_bytes: bytes, max_edge: int = MAX_IMAGE_EDGE) -> tuple[bytes, str]:
@@ -160,14 +185,10 @@ class DsvServer:
             if thinking_style == "grounding":
                 groundings = extract_groundings(thinking)
                 if groundings:
-                    return (
-                        text
-                        + "\n\n[Grounding]\n"
-                        + json.dumps(groundings, ensure_ascii=False)
-                    )
+                    return text + "\n\n" + _format_groundings(groundings)
                 return text
             if thinking_style == "pointing" and thinking and has_point_primitive(thinking):
-                return thinking
+                return _normalize_primitives(thinking)
             return text
         except DeepSeekError as exc:
             if exc.code == "auth_failed":
