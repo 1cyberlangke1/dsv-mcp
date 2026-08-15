@@ -1,0 +1,20 @@
+[project]
+name = "dsv-mcp"
+version = "0.2.0"
+description = "DeepSeek 网页版识图模式 MCP 服务器"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "curl-cffi>=0.16.0",
+    "mcp>=2.0.0",
+    "pillow>=12.3.0",
+    "pydantic>=2.13.4",
+    "wasmtime>=47.0.1",
+]
+
+[project.scripts]
+dsv-mcp = "dsv_mcp:main"
+
+[build-system]
+requires = ["uv_build>=0.12.5,<0.13.0"]
+build-backend = "uv_build"
