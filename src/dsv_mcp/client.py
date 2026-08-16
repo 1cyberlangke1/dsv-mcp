@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 import time
 import uuid
-from typing import Any
+from typing import Any, Literal
 
 from dsv_mcp.config import Account
 from dsv_mcp.http import HttpClient
@@ -16,6 +16,7 @@ from dsv_mcp.protocol import (
     CONTINUE_URL,
     CREATE_POW_URL,
     CREATE_SESSION_URL,
+    DELETE_ALL_SESSIONS_URL,
     DELETE_SESSION_URL,
     FETCH_FILES_URL,
     LOGIN_URL,
@@ -245,6 +246,7 @@ class DeepSeekClient:
     def __init__(self, http: HttpClient):
         self.http = http
         self._pending_deletes: list[tuple[Account, str, str]] = []
+        self._pending_delete_alls: list[tuple[Account, str]] = []
 
     # ---------- 认证 ----------
 
@@ -335,6 +337,15 @@ class DeepSeekClient:
         if code != 0 or biz_code != 0:
             raise DeepSeekError("session_delete_failed", f"删除会话失败: {biz_msg or code}")
 
+    def delete_all_sessions(self, account: Account, token: str) -> None:
+        """DeleteAll：清空该账号全部会话（payload 为空）。"""
+        resp = self.http.post_json(
+            DELETE_ALL_SESSIONS_URL, {}, headers=self._auth_headers(token)
+        )
+        code, biz_code, _, biz_msg = extract_response_status(resp)
+        if code != 0 or biz_code != 0:
+            raise DeepSeekError("session_delete_failed", f"清空会话失败: {biz_msg or code}")
+
     def stop_stream(self, account: Account, token: str, session_id: str, message_id: int) -> None:
         """StopStream。"""
         if session_id.strip() == "" or message_id <= 0:
@@ -420,7 +431,7 @@ class DeepSeekClient:
         filename: str = "image.jpg",
         content_type: str = "image/jpeg",
         thinking_enabled: bool = False,
-        auto_delete: bool = True,
+        auto_delete: Literal["none", "single", "all"] = "single",
     ) -> dict[str, Any]:
         """单轮识图：建会话 → 上传 → 就绪 → vision 对话 →（可选）删会话。"""
         self._flush_pending_deletes()
@@ -438,14 +449,19 @@ class DeepSeekClient:
             )
             return result
         finally:
-            if auto_delete:
+            if auto_delete == "single":
                 try:
                     self.delete_session(account, token, session_id)
                 except DeepSeekError:
                     self._pending_deletes.append((account, token, session_id))
+            elif auto_delete == "all":
+                try:
+                    self.delete_all_sessions(account, token)
+                except DeepSeekError:
+                    self._pending_delete_alls.append((account, token))
 
     def _flush_pending_deletes(self) -> None:
-        """补删上次删除失败的会话：成功移除，失败保留等下次。"""
+        """补删上次删除失败的会话/清空：成功移除，失败保留等下次。"""
         remaining: list[tuple[Account, str, str]] = []
         for account, token, session_id in self._pending_deletes:
             try:
@@ -453,6 +469,13 @@ class DeepSeekClient:
             except DeepSeekError:
                 remaining.append((account, token, session_id))
         self._pending_deletes = remaining
+        remaining_all: list[tuple[Account, str]] = []
+        for account, token in self._pending_delete_alls:
+            try:
+                self.delete_all_sessions(account, token)
+            except DeepSeekError:
+                remaining_all.append((account, token))
+        self._pending_delete_alls = remaining_all
 
     def call_completion(
         self,

@@ -12,11 +12,14 @@ from dsv_mcp.client import DeepSeekError
 from dsv_mcp.server import UPLOAD_COOLDOWN, DsvServer
 
 
-def _make_server(tmp_path, emails=("a@b.c",)):
+def _make_server(tmp_path, emails=("a@b.c",), auto_delete_mode=None):
     cfg = tmp_path / "config.json"
     accounts = [{"email": e, "password": "p"} for e in emails]
+    config = {"accounts": accounts, "proxy": {"mode": "none"}}
+    if auto_delete_mode is not None:
+        config["auto_delete"] = {"mode": auto_delete_mode}
     cfg.write_text(
-        json.dumps({"accounts": accounts, "proxy": {"mode": "none"}}),
+        json.dumps(config),
         encoding="utf-8",
     )
     server = DsvServer(cfg)
@@ -25,6 +28,32 @@ def _make_server(tmp_path, emails=("a@b.c",)):
 
     Image.new("RGB", (64, 64), (30, 80, 220)).save(img, format="JPEG", quality=85)
     return server, str(img)
+
+
+def test_auto_delete_mode_passed_to_client(tmp_path, monkeypatch):
+    for mode in ("none", "single", "all"):
+        server, img = _make_server(tmp_path, auto_delete_mode=mode)
+        received = {}
+        monkeypatch.setattr(server.client, "login", lambda account, device_id=None: "tok")
+
+        def fake_describe(
+            account,
+            token,
+            data,
+            prompt=None,
+            filename=None,
+            content_type=None,
+            thinking_enabled=False,
+            auto_delete="single",
+        ):
+            received["auto_delete"] = auto_delete
+            return {"text": "ok", "thinking": "", "message_id": 1}
+
+        monkeypatch.setattr(server.client, "describe_image", fake_describe)
+        result = server.describe_image(img, "q")
+        assert result == "ok"
+        assert received["auto_delete"] == mode
+        server.close()
 
 
 def test_token_cached_between_calls(tmp_path, monkeypatch):

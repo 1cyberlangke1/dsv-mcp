@@ -40,12 +40,19 @@ class ServerConfig(BaseModel):
     token: str = ""  # Bearer 鉴权密钥，配置后所有请求需带 Authorization
 
 
+class AutoDeleteConfig(BaseModel):
+    """会话自动清理策略：none 不删 / single 用后即删 / all 清空账号全部会话。"""
+
+    mode: Literal["none", "single", "all"] = "single"
+
+
 class DsvConfig(BaseModel):
     """总配置。"""
 
     accounts: list[Account] = Field(default_factory=list)
     proxy: ProxyConfig = Field(default_factory=ProxyConfig)
     server: ServerConfig = Field(default_factory=ServerConfig)
+    auto_delete: AutoDeleteConfig = Field(default_factory=AutoDeleteConfig)
 
     @classmethod
     def load(cls, path: str | Path) -> "DsvConfig":

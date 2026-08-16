@@ -200,7 +200,7 @@ class DsvServer:
                 filename="image.jpg",
                 content_type=content_type,
                 thinking_enabled=True,
-                auto_delete=True,
+                auto_delete=self.config.auto_delete.mode,
             )
             text = result["text"]
             thinking = result["thinking"]

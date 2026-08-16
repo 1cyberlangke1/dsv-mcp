@@ -17,6 +17,7 @@ STOP_STREAM_URL = BASE_URL + "/api/v0/chat/stop_stream"
 UPLOAD_URL = BASE_URL + "/api/v0/file/upload_file"
 FETCH_FILES_URL = BASE_URL + "/api/v0/file/fetch_files"
 DELETE_SESSION_URL = BASE_URL + "/api/v0/chat_session/delete"
+DELETE_ALL_SESSIONS_URL = BASE_URL + "/api/v0/chat_session/delete_all"
 
 COMPLETION_TARGET_PATH = "/api/v0/chat/completion"
 UPLOAD_TARGET_PATH = "/api/v0/file/upload_file"

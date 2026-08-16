@@ -30,7 +30,7 @@ DeepSeek 网页版识图模式（Vision）的 MCP 服务器。通过逆向网页
 | 三种思考模式 | `grounding`（bbox 锚定对象）/ `pointing`（点坐标锚定）/ `none`（无模式提示词） |
 | 视觉原语提取 | grounding 自动从思考链提取 \\`<<｜｜ref｜｜>>obj｜｜/ref｜｜>><<｜｜box｜｜>>[[x1,y1,x2,y1]]<<｜｜/box｜｜>>\\` |
 | 多账号轮询 | 账号 round-robin 调度、token 缓存复用、上传风控冷却、验证码挑战检测（30 分钟冷却） |
-| 会话管理 | 单轮会话自动清理，删除失败自动入队补删 |
+| 会话管理 | 自动清理可配置（`none` / `single` / `all`），删除失败自动入队补删 |
 | 代理三模式 | `none` 直连 / `manual` 显式代理 / `managed` 自动下载 mihomo 内核 + 订阅转配置 |
 | PoW | wasmtime 运行官方 wasm 求解 DeepSeekHashV1，challenge 严格一次性 |
 
@@ -160,6 +160,24 @@ HTTP 服务监听配置，命令行参数未指定时从这里取：
 - `host` / `port`：监听地址与端口（默认 `127.0.0.1:8765`），`--host` / `--port` 参数优先
 - `token`：可选；配置后所有请求需带 `Authorization: Bearer <token>`，否则返回 401，
   `--token` 参数优先
+
+### auto_delete
+
+识图结束后的会话清理策略（默认 `single`）：
+
+```json
+{
+  "auto_delete": {
+    "mode": "single"
+  }
+}
+```
+
+- `none`：不清理，会话保留在 DeepSeek 聊天记录中
+- `single`：只删除本次识图创建的会话（用后即删）
+- `all`：清空该账号全部历史会话（调 DeepSeek `chat_session/delete_all` 接口）
+
+删除失败会自动入队，下次调用时补删，直到成功。
 
 ## 思考模式
 

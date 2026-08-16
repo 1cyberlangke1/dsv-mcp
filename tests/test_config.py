@@ -92,3 +92,25 @@ def test_server_section_roundtrip(tmp_path):
 
 def test_server_section_defaults():
     assert DsvConfig(accounts=[{"email": "a@b.c", "password": "p"}]).server.port == 8765
+
+
+def test_auto_delete_defaults_single():
+    assert DsvConfig(accounts=[{"email": "a@b.c", "password": "p"}]).auto_delete.mode == "single"
+
+
+def test_auto_delete_parse_modes(tmp_path):
+    cfg = tmp_path / "config.json"
+    cfg.write_text(json.dumps({"accounts": [], "auto_delete": {"mode": "all"}}), encoding="utf-8")
+    assert DsvConfig.load(cfg).auto_delete.mode == "all"
+    cfg.write_text(json.dumps({"accounts": [], "auto_delete": {"mode": "none"}}), encoding="utf-8")
+    assert DsvConfig.load(cfg).auto_delete.mode == "none"
+
+
+def test_auto_delete_invalid_mode_rejected(tmp_path):
+    cfg = tmp_path / "config.json"
+    cfg.write_text(
+        json.dumps({"accounts": [], "auto_delete": {"mode": "sometimes"}}),
+        encoding="utf-8",
+    )
+    with pytest.raises(Exception):
+        DsvConfig.load(cfg)

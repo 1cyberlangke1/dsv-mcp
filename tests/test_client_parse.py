@@ -304,3 +304,106 @@ def test_delete_failure_queued_and_retried(monkeypatch):
     c.describe_image(None, "tok", b"x", "q")
     assert c._pending_deletes == []
     assert deletes["n"] == 3
+
+
+def test_delete_all_sessions_success():
+    calls = {}
+
+    class FakeHttp:
+        def post_json(self, url, payload, headers=None, timeout=60):
+            calls["url"] = url
+            calls["payload"] = payload
+            return {"code": 0, "data": {"biz_code": 0, "biz_data": {}}}
+
+    client = DeepSeekClient(FakeHttp())
+    client.delete_all_sessions(None, "tok")
+    assert calls["url"].endswith("/chat_session/delete_all")
+    assert calls["payload"] == {}
+
+
+def test_delete_all_sessions_failure_raises():
+    class FakeHttp:
+        def post_json(self, url, payload, headers=None, timeout=60):
+            return {"code": 0, "data": {"biz_code": 500, "biz_msg": "boom"}}
+
+    client = DeepSeekClient(FakeHttp())
+    with pytest.raises(DeepSeekError) as exc:
+        client.delete_all_sessions(None, "tok")
+    assert exc.value.code == "session_delete_failed"
+
+
+def _client_with_fake_flow(monkeypatch, delete, delete_all):
+    from dsv_mcp import client as client_mod
+
+    c = client_mod.DeepSeekClient(type("_NoopHttp", (), {})())
+    monkeypatch.setattr(c, "create_session", lambda a, t: "s1")
+    monkeypatch.setattr(c, "upload_file", lambda *a, **k: "f1")
+    monkeypatch.setattr(c, "wait_for_uploaded_file", lambda *a, **k: None)
+    monkeypatch.setattr(
+        c, "call_completion", lambda *a, **k: {"text": "ok", "thinking": "", "message_id": 1}
+    )
+    monkeypatch.setattr(c, "delete_session", delete)
+    monkeypatch.setattr(c, "delete_all_sessions", delete_all)
+    return c
+
+
+def test_auto_delete_none_skips_delete(monkeypatch):
+    calls = {"del": 0, "delall": 0}
+    c = _client_with_fake_flow(
+        monkeypatch,
+        lambda *a, **k: calls.__setitem__("del", calls["del"] + 1),
+        lambda *a, **k: calls.__setitem__("delall", calls["delall"] + 1),
+    )
+    c.describe_image(None, "tok", b"x", "q", auto_delete="none")
+    assert calls == {"del": 0, "delall": 0}
+
+
+def test_auto_delete_single_deletes_current_session(monkeypatch):
+    calls = {"del": 0, "delall": 0}
+    c = _client_with_fake_flow(
+        monkeypatch,
+        lambda *a, **k: calls.__setitem__("del", calls["del"] + 1),
+        lambda *a, **k: calls.__setitem__("delall", calls["delall"] + 1),
+    )
+    c.describe_image(None, "tok", b"x", "q", auto_delete="single")
+    assert calls == {"del": 1, "delall": 0}
+    assert c._pending_deletes == []
+
+
+def test_auto_delete_all_clears_account_sessions(monkeypatch):
+    calls = {"del": 0, "delall": 0}
+    c = _client_with_fake_flow(
+        monkeypatch,
+        lambda *a, **k: calls.__setitem__("del", calls["del"] + 1),
+        lambda *a, **k: calls.__setitem__("delall", calls["delall"] + 1),
+    )
+    c.describe_image(None, "tok", b"x", "q", auto_delete="all")
+    assert calls == {"del": 0, "delall": 1}
+    assert c._pending_delete_alls == []
+
+
+def test_delete_all_failure_queued_and_retried(monkeypatch):
+    from dsv_mcp import client as client_mod
+
+    c = client_mod.DeepSeekClient(type("_NoopHttp", (), {})())
+    monkeypatch.setattr(c, "create_session", lambda a, t: "s1")
+    monkeypatch.setattr(c, "upload_file", lambda *a, **k: "f1")
+    monkeypatch.setattr(c, "wait_for_uploaded_file", lambda *a, **k: None)
+    monkeypatch.setattr(
+        c, "call_completion", lambda *a, **k: {"text": "ok", "thinking": "", "message_id": 1}
+    )
+    deletes = {"n": 0}
+
+    def fake_delete_all(account, token):
+        deletes["n"] += 1
+        if deletes["n"] == 1:
+            raise DeepSeekError("session_delete_failed", "boom")
+
+    monkeypatch.setattr(c, "delete_all_sessions", fake_delete_all)
+    # 第一次：清空失败 → 入队
+    c.describe_image(None, "tok", b"x", "q", auto_delete="all")
+    assert len(c._pending_delete_alls) == 1
+    # 第二次：先补删成功 → 队列清空，本次也清空
+    c.describe_image(None, "tok", b"x", "q", auto_delete="all")
+    assert c._pending_delete_alls == []
+    assert deletes["n"] == 3
