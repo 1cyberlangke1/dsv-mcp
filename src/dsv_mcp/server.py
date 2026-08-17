@@ -207,52 +207,76 @@ class DsvServer:
             ident, account = self._acquire()
         except DeepSeekError as exc:
             return f"账号不可用: {exc.code} {exc}"
+        if thinking_style == "grounding":
+            prompt = f"{GROUNDING_TITLE}\n{question}"
+        elif thinking_style == "pointing":
+            prompt = f"{POINTING_TITLE}\n{question}"
+        else:
+            prompt = question
         try:
-            token = self._token_for(ident)
-            if thinking_style == "grounding":
-                prompt = f"{GROUNDING_TITLE}\n{question}"
-            elif thinking_style == "pointing":
-                prompt = f"{POINTING_TITLE}\n{question}"
-            else:
-                prompt = question
-            result = self.client.describe_image(
-                account,
-                token,
-                data,
-                prompt=prompt,
-                filename="image.jpg",
-                content_type=content_type,
-                thinking_enabled=True,
-                auto_delete=self.config.auto_delete.mode,
-            )
-            text = result["text"]
-            thinking = result["thinking"]
-            if thinking_style == "grounding":
-                groundings = extract_groundings(thinking)
-                if groundings:
-                    return text + "\n\n" + _format_groundings(groundings)
-                return text
-            if thinking_style == "pointing" and thinking and has_point_primitive(thinking):
-                return _normalize_primitives(thinking)
-            return text
-        except DeepSeekError as exc:
-            if exc.code == "auth_failed":
-                self._tokens.pop(ident, None)
-                self.config.tokens.pop(ident, None)
-                self.config.save(self._config_path)
-            elif exc.code == "account_banned":
-                self._mark_banned(ident)
-            elif exc.code == "upload_rate_limited":
-                self._cooldown[ident] = time.monotonic() + UPLOAD_COOLDOWN
-            elif exc.code == "captcha_required":
-                self._cooldown[ident] = time.monotonic() + CAPTCHA_COOLDOWN
-            elif exc.code == "account_muted":
-                self._cooldown[ident] = time.monotonic() + self._muted_seconds(exc)
-            return f"识图失败: {exc.code} {exc}"
+            for attempt in range(2):
+                try:
+                    return self._describe_once(
+                        ident, account, data, content_type, prompt, thinking_style
+                    )
+                except DeepSeekError as exc:
+                    if exc.code == "auth_failed" and attempt == 0:
+                        # token 失效：清缓存重登重试一次（密码真错时第二次仍失败返回错误）
+                        self._tokens.pop(ident, None)
+                        self.config.tokens.pop(ident, None)
+                        self.config.save(self._config_path)
+                        continue
+                    if exc.code == "auth_failed":
+                        # 重试仍失败（登录也失败）：清掉坏缓存，避免下次直接复用
+                        self._tokens.pop(ident, None)
+                        self.config.tokens.pop(ident, None)
+                        self.config.save(self._config_path)
+                    if exc.code == "account_banned":
+                        self._mark_banned(ident)
+                    elif exc.code == "upload_rate_limited":
+                        self._cooldown[ident] = time.monotonic() + UPLOAD_COOLDOWN
+                    elif exc.code == "captcha_required":
+                        self._cooldown[ident] = time.monotonic() + CAPTCHA_COOLDOWN
+                    elif exc.code == "account_muted":
+                        self._cooldown[ident] = time.monotonic() + self._muted_seconds(exc)
+                    return f"识图失败: {exc.code} {exc}"
+            return "识图失败: auth_failed 重试耗尽"  # 不可达（range(2) 内必然 return）
         except Exception as exc:
             return f"识图失败: {type(exc).__name__}: {exc}"
         finally:
             self._busy[ident] = False
+
+    def _describe_once(
+        self,
+        ident: str,
+        account: object,
+        data: bytes,
+        content_type: str,
+        prompt: str,
+        thinking_style: str,
+    ) -> str:
+        """单次识图：登录态 + vision 对话 + 按模式格式化返回。"""
+        token = self._token_for(ident)
+        result = self.client.describe_image(
+            account,
+            token,
+            data,
+            prompt=prompt,
+            filename="image.jpg",
+            content_type=content_type,
+            thinking_enabled=True,
+            auto_delete=self.config.auto_delete.mode,
+        )
+        text = result["text"]
+        thinking = result["thinking"]
+        if thinking_style == "grounding":
+            groundings = extract_groundings(thinking)
+            if groundings:
+                return text + "\n\n" + _format_groundings(groundings)
+            return text
+        if thinking_style == "pointing" and thinking and has_point_primitive(thinking):
+            return _normalize_primitives(thinking)
+        return text
 
     def _muted_seconds(self, exc: DeepSeekError) -> float:
         """account_muted 剩余冷却秒数：有到期时间按差值，未知按验证码冷却兜底。"""

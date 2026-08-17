@@ -301,6 +301,7 @@ class DeepSeekClient:
         resp = self.http.post_json(
             CREATE_POW_URL, {"target_path": target_path}, headers=self._auth_headers(token)
         )
+        self._raise_if_token_invalid(resp, "获取 PoW")
         self._raise_if_captcha(resp, "获取 PoW")
         code, biz_code, _, biz_msg = extract_response_status(resp)
         if code != 0 or biz_code != 0:
@@ -318,6 +319,7 @@ class DeepSeekClient:
     def create_session(self, account: Account, token: str) -> str:
         """CreateSession：空 payload。"""
         resp = self.http.post_json(CREATE_SESSION_URL, {}, headers=self._auth_headers(token))
+        self._raise_if_token_invalid(resp, "创建会话")
         self._raise_if_captcha(resp, "创建会话")
         code, biz_code, _, biz_msg = extract_response_status(resp)
         if code != 0 or biz_code != 0:
@@ -333,6 +335,7 @@ class DeepSeekClient:
             {"chat_session_id": session_id},
             headers=self._session_headers(token, session_id),
         )
+        self._raise_if_token_invalid(resp, "删除会话")
         code, biz_code, _, biz_msg = extract_response_status(resp)
         if code != 0 or biz_code != 0:
             raise DeepSeekError("session_delete_failed", f"删除会话失败: {biz_msg or code}")
@@ -342,6 +345,7 @@ class DeepSeekClient:
         resp = self.http.post_json(
             DELETE_ALL_SESSIONS_URL, {}, headers=self._auth_headers(token)
         )
+        self._raise_if_token_invalid(resp, "清空会话")
         code, biz_code, _, biz_msg = extract_response_status(resp)
         if code != 0 or biz_code != 0:
             raise DeepSeekError("session_delete_failed", f"清空会话失败: {biz_msg or code}")
@@ -355,6 +359,7 @@ class DeepSeekClient:
             {"chat_session_id": session_id, "message_id": message_id},
             headers=self._session_headers(token, session_id),
         )
+        self._raise_if_token_invalid(resp, "停止生成")
         code, biz_code, _, biz_msg = extract_response_status(resp)
         if code != 0 or biz_code != 0:
             raise DeepSeekError("stop_failed", f"停止生成失败: {biz_msg or code}")
@@ -374,6 +379,7 @@ class DeepSeekClient:
         resp = self.http.post_multipart(
             UPLOAD_URL, files={"file": (filename, data, content_type)}, headers=headers
         )
+        self._raise_if_token_invalid(resp, "上传文件")
         self._raise_if_captcha(resp, "上传文件")
         code, biz_code, _, biz_msg = extract_response_status(resp)
         if code != 0 or biz_code != 0:
@@ -582,6 +588,30 @@ class DeepSeekClient:
         if ch is not None:
             detail = ch["instruction"] or ch["image_url"] or "captcha challenge"
             raise DeepSeekError("captcha_required", f"{op} 触发验证码/风控: {detail}")
+
+    @staticmethod
+    def _raise_if_token_invalid(resp: dict[str, Any], op: str) -> None:
+        """响应表明 token 失效（40001/40002/40003 或失效文案）时抛 auth_failed。
+
+        参考 ds2api isTokenInvalid 的判定集合：HTTP 401/403 由调用层抛错；
+        这里处理 JSON 响应里的 code/biz_code 与文案。
+        """
+        code, biz_code, msg, biz_msg = extract_response_status(resp)
+        text = f"{msg} {biz_msg}".lower()
+        if code in (40001, 40002, 40003) or biz_code in (40001, 40002, 40003):
+            raise DeepSeekError("auth_failed", f"{op}: token 已失效")
+        if any(
+            k in text
+            for k in (
+                "token",
+                "unauthorized",
+                "expired",
+                "not login",
+                "login required",
+                "invalid jwt",
+            )
+        ):
+            raise DeepSeekError("auth_failed", f"{op}: token 已失效")
 
     def _session_headers(self, token: str, session_id: str) -> dict[str, str]:
         return {

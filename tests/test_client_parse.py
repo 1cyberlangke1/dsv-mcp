@@ -175,6 +175,48 @@ def test_upload_other_error_keeps_code(monkeypatch):
     assert exc.value.code == "upload_failed"
 
 
+def test_create_session_40003_maps_to_auth_failed():
+    class FakeHttp:
+        def post_json(self, url, payload, headers=None, timeout=60):
+            return {"code": 0, "data": {"biz_code": 40003, "biz_msg": "invalid token"}}
+
+    with pytest.raises(DeepSeekError) as exc:
+        DeepSeekClient(FakeHttp()).create_session(None, "stale-token")
+    assert exc.value.code == "auth_failed"
+
+
+def test_upload_40001_maps_to_auth_failed(monkeypatch):
+    class FakeHttp:
+        def post_multipart(self, url, files, headers=None, timeout=120):
+            return {"code": 40001, "data": {}}
+
+    client = DeepSeekClient(FakeHttp())
+    monkeypatch.setattr(client, "get_pow_for_target", lambda *a, **k: "pow")
+    with pytest.raises(DeepSeekError) as exc:
+        client.upload_file(None, "tok", "a.jpg", "image/jpeg", b"x")
+    assert exc.value.code == "auth_failed"
+
+
+def test_pow_token_expired_msg_maps_to_auth_failed():
+    class FakeHttp:
+        def post_json(self, url, payload, headers=None, timeout=60):
+            return {"code": 0, "data": {"biz_code": 1, "biz_msg": "token expired"}}
+
+    with pytest.raises(DeepSeekError) as exc:
+        DeepSeekClient(FakeHttp()).get_pow_for_target(None, "stale", "/target")
+    assert exc.value.code == "auth_failed"
+
+
+def test_normal_biz_error_not_mapped_to_auth():
+    class FakeHttp:
+        def post_json(self, url, payload, headers=None, timeout=60):
+            return {"code": 0, "data": {"biz_code": 50000, "biz_msg": "boom"}}
+
+    with pytest.raises(DeepSeekError) as exc:
+        DeepSeekClient(FakeHttp()).create_session(None, "tok")
+    assert exc.value.code == "session_failed"
+
+
 def test_pow_recreated_each_call(monkeypatch):
     import dsv_mcp.client as client_mod
 

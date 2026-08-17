@@ -122,6 +122,52 @@ def test_token_removed_from_config_on_auth_failure(tmp_path, monkeypatch):
     server.close()
 
 
+def test_stale_disk_token_auto_relogin(tmp_path, monkeypatch):
+    """磁盘 token 失效：自动清缓存重新登录并重试成功，用户无感。"""
+    server, img = _make_server(tmp_path)
+    ident = server._order[0]
+    server.config.tokens[ident] = "stale-token"
+    server.config.save(tmp_path / "config.json")
+    calls = {"login": 0, "describe": 0}
+
+    def fake_login(account, device_id=None):
+        calls["login"] += 1
+        return "fresh-token"
+
+    def fake_describe(account, token, image_bytes, prompt, **kwargs):
+        calls["describe"] += 1
+        if token == "stale-token":
+            raise DeepSeekError("auth_failed", "token 失效")
+        return {"text": "重试成功", "thinking": "", "message_id": 1}
+
+    monkeypatch.setattr(server.client, "login", fake_login)
+    monkeypatch.setattr(server.client, "describe_image", fake_describe)
+    result = server.describe_image(img, "q")
+    assert result == "重试成功"
+    assert calls["describe"] == 2
+    assert calls["login"] == 1
+    saved = json.loads((tmp_path / "config.json").read_text(encoding="utf-8"))
+    assert saved["tokens"][ident] == "fresh-token"
+    server.close()
+
+
+def test_auth_failed_retry_exhausted_returns_error(tmp_path, monkeypatch):
+    """重试后仍 auth_failed（密码已错）：返回错误不无限重试。"""
+    server, img = _make_server(tmp_path)
+    ident = server._order[0]
+    server.config.tokens[ident] = "stale"
+    server.config.save(tmp_path / "config.json")
+    monkeypatch.setattr(server.client, "login", lambda account, device_id=None: "bad")
+
+    def fake_describe(account, token, image_bytes, prompt, **kwargs):
+        raise DeepSeekError("auth_failed", "token 失效")
+
+    monkeypatch.setattr(server.client, "describe_image", fake_describe)
+    result = server.describe_image(img, "q")
+    assert "auth_failed" in result
+    server.close()
+
+
 def test_token_dropped_on_auth_failure(tmp_path, monkeypatch):
     server, img = _make_server(tmp_path)
     server._tokens["a@b.c"] = "tok-old"
