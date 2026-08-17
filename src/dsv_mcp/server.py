@@ -52,6 +52,25 @@ IDLE_SHUTDOWN_SECONDS = 600.0
 _LAST_ACTIVE: dict[str, float] = {"t": 0.0}
 # 后台拉起 HTTP 实例失败的错误记录（url -> 错误），供工具调用前检查
 _LAUNCH_FAILED: dict[str, str] = {}
+_LAUNCH_LOCK = threading.Lock()
+
+
+def _stdio_log(msg: str) -> None:
+    """写 stdio 代理运行日志（%TEMP%\\dsv-mcp-stdio-{pid}.log）。
+
+    stdio 代理被 Codex 杀/失效时现场不留痕，只能靠日志还原最后状态
+    （比如调用时实例是否在拉起、抛了什么异常）。写文件不碰 stdout，
+    stdout 只允许 JSON-RPC 行；日志超过 512KB 截断重建防烧硬盘。
+    """
+    try:
+        path = Path(tempfile.gettempdir()) / f"dsv-mcp-stdio-{os.getpid()}.log"
+        line = f"{time.strftime('%H:%M:%S')} {msg}\n"
+        if path.exists() and path.stat().st_size > 512 * 1024:
+            path.unlink(missing_ok=True)
+        with path.open("a", encoding="utf-8") as f:
+            f.write(line)
+    except OSError:
+        pass
 
 
 def _child_interpreter() -> str:
@@ -421,43 +440,57 @@ def _ensure_http_server(
     port: int,
     token: str,
 ) -> None:
-    """检查共享 HTTP 实例；没在跑则后台拉起（脱离会话常驻），等待就绪。"""
-    if _can_connect(host, port):
-        return
-    log_dir = Path(tempfile.gettempdir())
-    # 清理同端口旧日志（旧实例已死才会走到拉起），避免多进程 append 互相污染
-    for old in log_dir.glob(f"dsv-mcp-http-{port}-*.log"):
-        try:
-            old.unlink()
-        except OSError:
-            pass
-    log_path = log_dir / f"dsv-mcp-http-{port}-{os.getpid()}.log"
-    cmd = [
-        _child_interpreter(),
-        "-m",
-        "dsv_mcp",
-        config_path,
-        "--host",
-        host,
-        "--port",
-        str(port),
-    ]
-    if token:
-        cmd += ["--token", token]
-    with log_path.open("ab", buffering=0) as log_file:
-        subprocess.Popen(
-            cmd,
-            stdin=subprocess.DEVNULL,
-            stdout=log_file,
-            stderr=log_file,
-            start_new_session=True,
-        )
-    deadline = time.monotonic() + HTTP_STARTUP_TIMEOUT
-    while time.monotonic() < deadline:
+    """检查共享 HTTP 实例；没在跑则后台拉起（脱离会话常驻），等待就绪。
+
+    整个「检查+拉起+等就绪」用进程内锁包住：_launch_background 线程和
+    工具调用里的 _ensure_http_server 可能同时发现实例不在而重复拉起，
+    两个实例抢同一端口，输的那个写 ERROR 日志后退出（实测出现
+    Errno 10048）。加锁后同进程只拉起一次，后来的调用者等锁再复用。
+    """
+    with _LAUNCH_LOCK:
         if _can_connect(host, port):
+            _stdio_log(f"实例已在 {host}:{port}，复用")
             return
-        time.sleep(0.1)
-    raise RuntimeError(f"HTTP 实例未能在 {host}:{port} 启动，日志: {log_path}")
+        _stdio_log(f"实例不在 {host}:{port}，开始拉起")
+        log_dir = Path(tempfile.gettempdir())
+        # 清理同端口旧日志（旧实例已死才会走到拉起），避免多进程 append 互相污染
+        for old in log_dir.glob(f"dsv-mcp-http-{port}-*.log"):
+            try:
+                old.unlink()
+            except OSError:
+                pass
+        log_path = log_dir / f"dsv-mcp-http-{port}-{os.getpid()}.log"
+        cmd = [
+            _child_interpreter(),
+            "-m",
+            "dsv_mcp",
+            config_path,
+            "--host",
+            host,
+            "--port",
+            str(port),
+        ]
+        if token:
+            cmd += ["--token", token]
+        with log_path.open("ab", buffering=0) as log_file:
+            subprocess.Popen(
+                cmd,
+                stdin=subprocess.DEVNULL,
+                stdout=log_file,
+                stderr=log_file,
+                start_new_session=True,
+            )
+        deadline = time.monotonic() + HTTP_STARTUP_TIMEOUT
+        while time.monotonic() < deadline:
+            if _can_connect(host, port):
+                _stdio_log(
+                    f"实例就绪 {host}:{port}，"
+                    f"耗时 {time.monotonic() - deadline + HTTP_STARTUP_TIMEOUT:.1f}s"
+                )
+                return
+            time.sleep(0.1)
+        _stdio_log(f"实例启动超时 {host}:{port}，日志: {log_path}")
+        raise RuntimeError(f"HTTP 实例未能在 {host}:{port} 启动，日志: {log_path}")
 
 
 def _resolve_token(token: str) -> str:
@@ -548,12 +581,14 @@ def serve_stdio_autostart(
 ) -> None:
     """stdio 自动启动代理：后台拉起共享 HTTP 实例，握手不等待，工具调用时转发。"""
     token = _resolve_token(token)
+    _stdio_log(f"stdio 代理启动 config={config_path} host={host} port={port}")
 
     def _launch_background() -> None:
         try:
             _ensure_http_server(config_path, host, port, token)
         except Exception as exc:
             _LAUNCH_FAILED["err"] = f"{type(exc).__name__}: {exc}"
+            _stdio_log(f"后台拉起失败: {exc}")
 
     threading.Thread(target=_launch_background, daemon=True).start()
     url = f"http://{host}:{port}{AUTOSTART_PATH}"
@@ -581,16 +616,23 @@ def serve_stdio_autostart(
             Grounding boxes are returned as "<|ref|>label<|/ref|><|box|>[[x1,y1,x2,y2]]<|/box|>"
             lines; pointing returns the thinking chain containing "<|point|>[[x,y]]<|/point|>".
         """
-        return await _call_http_tool(
-            url,
-            token,
-            image_path,
-            question,
-            thinking_style,
-            config_path,
-            host,
-            port,
-        )
+        _stdio_log(f"调用开始 mode={thinking_style} img={image_path}")
+        try:
+            result = await _call_http_tool(
+                url,
+                token,
+                image_path,
+                question,
+                thinking_style,
+                config_path,
+                host,
+                port,
+            )
+        except Exception as exc:
+            _stdio_log(f"调用失败 {type(exc).__name__}: {exc}")
+            raise
+        _stdio_log(f"调用完成，结果 {len(result)} 字符")
+        return result
 
     anyio.run(mcp.run_stdio_async)
 
@@ -632,5 +674,8 @@ def main() -> None:
     if autostart:
         serve_stdio_autostart(config_path, host=host, port=port, token=token)
         return
+    # 启动横幅写给日志（HTTP 实例的 stdout/stderr 被重定向到 %TEMP% 日志文件），
+    # 便于确认实例确实起来了；正常请求期无输出时日志不再空着
+    print(f"dsv-mcp HTTP 实例启动 {host}:{port}", flush=True)
     server = DsvServer(config_path)
     serve_http(server, host=host, port=port, token=token)

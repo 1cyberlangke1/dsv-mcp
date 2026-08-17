@@ -59,7 +59,23 @@ def _repair_windows_env() -> None:
             pass
 
 
+def _quiet_third_party_loggers() -> None:
+    """把第三方库的 INFO 日志降到 WARNING。
+
+    实测（Codex issue #7155）：Windows 上 stdio MCP 服务器在工具执行期间
+    往 stderr 大量输出（httpx 每次请求都打一行、mcp 库打 session 行）会让
+    Codex 的 stderr 管道处理出错，最终整个工具调用报 Transport closed。
+    这些日志对用户无价值，直接静音；自己写的日志走文件（见 server 的
+    _stdio_log / HTTP 实例日志），不占 stderr。
+    """
+    import logging
+
+    for name in ("httpx", "httpcore", "mcp", "client"):
+        logging.getLogger(name).setLevel(logging.WARNING)
+
+
 _repair_windows_env()
+_quiet_third_party_loggers()
 
 
 def main() -> None:

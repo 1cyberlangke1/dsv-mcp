@@ -3,13 +3,16 @@
 from __future__ import annotations
 
 import json
+import logging
+import subprocess
 import sys
+import threading
 import time
 
 import pytest
 
 from dsv_mcp.client import DeepSeekError
-from dsv_mcp.server import UPLOAD_COOLDOWN, DsvServer
+from dsv_mcp.server import UPLOAD_COOLDOWN, DsvServer, _ensure_http_server, _stdio_log
 
 
 def _make_server(tmp_path, emails=("a@b.c",), auto_delete_mode=None):
@@ -544,6 +547,69 @@ def test_http_mode_serves_tool(tmp_path, monkeypatch):
         uvicorn_server.should_exit = True
         thread.join(timeout=5)
         server.close()
+
+
+def test_third_party_loggers_quieted():
+    """第三方库日志降到 WARNING：避免 Codex Windows stderr 管道 bug（issue #7155）。"""
+    assert logging.getLogger("httpx").level == logging.WARNING
+    assert logging.getLogger("httpcore").level == logging.WARNING
+    assert logging.getLogger("mcp").level == logging.WARNING
+    assert logging.getLogger("client").level == logging.WARNING
+
+
+def test_stdio_log_writes_and_rotates(tmp_path, monkeypatch):
+    """stdio 日志写 %TEMP%，超过 512KB 重建防烧硬盘。"""
+    monkeypatch.setattr("dsv_mcp.server.tempfile.gettempdir", lambda: str(tmp_path))
+    _stdio_log("第一条")
+    _stdio_log("第二条")
+    log = next(tmp_path.glob("dsv-mcp-stdio-*.log"))
+    content = log.read_text(encoding="utf-8")
+    assert "第一条" in content and "第二条" in content
+
+    log.write_text("x" * (513 * 1024), encoding="utf-8")
+    _stdio_log("旋转后")
+    rotated = next(tmp_path.glob("dsv-mcp-stdio-*.log"))
+    content = rotated.read_text(encoding="utf-8")
+    assert "旋转后" in content and len(content) < 512 * 1024
+
+
+def test_ensure_http_server_single_launch_under_lock(tmp_path, monkeypatch):
+    """并发调用 _ensure_http_server 只拉起一次（进程内锁防重复拉起抢端口）。"""
+    monkeypatch.setattr("dsv_mcp.server.tempfile.gettempdir", lambda: str(tmp_path))
+    monkeypatch.setattr("dsv_mcp.server._stdio_log", lambda msg: None)
+    monkeypatch.setattr("dsv_mcp.server._child_interpreter", lambda: "python")
+
+    probe = {"n": 0}
+
+    def fake_can_connect(host, port):
+        probe["n"] += 1
+        return probe["n"] > 1  # 第一次探测失败触发拉起，之后视为已就绪
+
+    monkeypatch.setattr("dsv_mcp.server._can_connect", fake_can_connect)
+    pops: list = []
+
+    def fake_popen(cmd, **kwargs):
+        pops.append(cmd)
+        return None
+
+    monkeypatch.setattr(subprocess, "Popen", fake_popen)
+
+    errors: list[Exception] = []
+
+    def launch():
+        try:
+            _ensure_http_server("config.json", "127.0.0.1", 8765, "")
+        except Exception as exc:  # noqa: BLE001
+            errors.append(exc)
+
+    threads = [threading.Thread(target=launch) for _ in range(2)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=10)
+
+    assert not errors
+    assert len(pops) == 1
 
 
 def test_wait_http_ready_waits_then_ready(monkeypatch):
