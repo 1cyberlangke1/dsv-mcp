@@ -53,6 +53,7 @@ class DsvConfig(BaseModel):
     proxy: ProxyConfig = Field(default_factory=ProxyConfig)
     server: ServerConfig = Field(default_factory=ServerConfig)
     auto_delete: AutoDeleteConfig = Field(default_factory=AutoDeleteConfig)
+    tokens: dict[str, str] = Field(default_factory=dict)  # 登录 token 磁盘缓存（identifier -> token），实例重启复用
 
     @classmethod
     def load(cls, path: str | Path) -> "DsvConfig":

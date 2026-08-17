@@ -72,6 +72,56 @@ def test_token_cached_between_calls(tmp_path, monkeypatch):
     server.close()
 
 
+def test_token_persisted_to_config_after_login(tmp_path, monkeypatch):
+    """登录成功后 token 写入 config.json 的 tokens 字段（供实例重启复用）。"""
+    server, _ = _make_server(tmp_path)
+    monkeypatch.setattr(server.client, "login", lambda account, device_id=None: "tok-1")
+    ident = server._order[0]
+    assert server._token_for(ident) == "tok-1"
+    saved = json.loads((tmp_path / "config.json").read_text(encoding="utf-8"))
+    assert saved.get("tokens", {}).get(ident) == "tok-1"
+    server.close()
+
+
+def test_token_loaded_from_config_after_restart(tmp_path, monkeypatch):
+    """实例重启后从 config.json 读到磁盘 token，不重新登录。"""
+    server, _ = _make_server(tmp_path)
+    monkeypatch.setattr(server.client, "login", lambda account, device_id=None: "tok-1")
+    ident = server._order[0]
+    assert server._token_for(ident) == "tok-1"
+    server.close()
+
+    calls = {"login": 0}
+
+    def fake_login(account, device_id=None):
+        calls["login"] += 1
+        return "tok-2"
+
+    server2 = DsvServer(tmp_path / "config.json")
+    monkeypatch.setattr(server2.client, "login", fake_login)
+    assert server2._token_for(ident) == "tok-1"
+    assert calls["login"] == 0
+    server2.close()
+
+
+def test_token_removed_from_config_on_auth_failure(tmp_path, monkeypatch):
+    """auth_failed 时磁盘 token 一并清除。"""
+    server, img = _make_server(tmp_path)
+    monkeypatch.setattr(server.client, "login", lambda account, device_id=None: "tok-old")
+    ident = server._order[0]
+    assert server._token_for(ident) == "tok-old"
+
+    def boom(*args, **kwargs):
+        raise DeepSeekError("auth_failed", "bad token")
+
+    monkeypatch.setattr(server.client, "describe_image", boom)
+    result = server.describe_image(img, "q")
+    assert "auth_failed" in result
+    saved = json.loads((tmp_path / "config.json").read_text(encoding="utf-8"))
+    assert ident not in saved.get("tokens", {})
+    server.close()
+
+
 def test_token_dropped_on_auth_failure(tmp_path, monkeypatch):
     server, img = _make_server(tmp_path)
     server._tokens["a@b.c"] = "tok-old"

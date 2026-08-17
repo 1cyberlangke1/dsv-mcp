@@ -174,16 +174,22 @@ class DsvServer:
         raise DeepSeekError("rate_limited", "所有账号忙或冷却中，请稍后重试")
 
     def _token_for(self, ident: str) -> str:
+        """取账号 token：内存缓存 → 磁盘缓存 → 登录，成功后写盘复用。"""
         token = self._tokens.get(ident, "")
         if token:
             return token
+        disk = self.config.tokens.get(ident, "")
+        if disk:
+            self._tokens[ident] = disk
+            return disk
         account = next(a for a in self.config.accounts if a.identifier() == ident)
         token = self.client.login(account)
         if account.banned:
             # 登录成功说明停用已解除，清掉持久化标记
             account.banned = False
-            self.config.save(self._config_path)
         self._tokens[ident] = token
+        self.config.tokens[ident] = token
+        self.config.save(self._config_path)
         return token
 
     def describe_image(
@@ -232,6 +238,8 @@ class DsvServer:
         except DeepSeekError as exc:
             if exc.code == "auth_failed":
                 self._tokens.pop(ident, None)
+                self.config.tokens.pop(ident, None)
+                self.config.save(self._config_path)
             elif exc.code == "account_banned":
                 self._mark_banned(ident)
             elif exc.code == "upload_rate_limited":
