@@ -53,6 +53,23 @@ _LAST_ACTIVE: dict[str, float] = {"t": 0.0}
 # 后台拉起 HTTP 实例失败的错误记录（url -> 错误），供工具调用前检查
 _LAUNCH_FAILED: dict[str, str] = {}
 
+
+def _child_interpreter() -> str:
+    """返回子进程应使用的解释器路径。
+
+    Windows 上 venv 的 python.exe 是 launcher，sys.executable 可能被解析成
+    base 解释器路径（base 环境没有 dsv_mcp 包，子进程会启动失败）。显式用
+    sys.prefix 下的解释器，保证子进程与当前进程同环境；非 venv 回退
+    sys.executable。
+    """
+    if sys.prefix != sys.base_prefix:
+        exe_dir = Path(sys.prefix) / ("Scripts" if os.name == "nt" else "bin")
+        exe = exe_dir / ("python.exe" if os.name == "nt" else "python")
+        if exe.exists():
+            return str(exe)
+    return sys.executable
+
+
 def _normalize_primitives(text: str) -> str:
     """把思考链里的视觉原语标记归一化为标准形态。
 
@@ -375,8 +392,24 @@ def _ensure_http_server(
     """检查共享 HTTP 实例；没在跑则后台拉起（脱离会话常驻），等待就绪。"""
     if _can_connect(host, port):
         return
-    log_path = Path(tempfile.gettempdir()) / "dsv-mcp-http.log"
-    cmd = [sys.executable, "-m", "dsv_mcp", config_path, "--host", host, "--port", str(port)]
+    log_dir = Path(tempfile.gettempdir())
+    # 清理同端口旧日志（旧实例已死才会走到拉起），避免多进程 append 互相污染
+    for old in log_dir.glob(f"dsv-mcp-http-{port}-*.log"):
+        try:
+            old.unlink()
+        except OSError:
+            pass
+    log_path = log_dir / f"dsv-mcp-http-{port}-{os.getpid()}.log"
+    cmd = [
+        _child_interpreter(),
+        "-m",
+        "dsv_mcp",
+        config_path,
+        "--host",
+        host,
+        "--port",
+        str(port),
+    ]
     if token:
         cmd += ["--token", token]
     with log_path.open("ab", buffering=0) as log_file:
@@ -406,11 +439,33 @@ async def _call_http_tool(
     image_path: str,
     question: str,
     thinking_style: str,
+    config_path: str = "",
+    host: str = "",
+    port: int = 0,
 ) -> str:
-    """把工具调用转发给共享 HTTP 实例。"""
+    """把工具调用转发给共享 HTTP 实例；实例已死则自动重新拉起（自愈）。"""
+    if config_path:
+        # 确保实例活着：端口已开则秒回，否则后台拉起
+        _LAUNCH_FAILED.pop("err", None)
+        await anyio.to_thread.run_sync(
+            _ensure_http_server, config_path, host, port, token
+        )
     launch_err = await _wait_http_ready(url, HTTP_STARTUP_TIMEOUT)
     if launch_err:
-        raise DeepSeekError("upstream_unavailable", launch_err)
+        if config_path:
+            # 自愈重试：清掉旧错误再拉起一次，仍失败才报错
+            _LAUNCH_FAILED.pop("err", None)
+            try:
+                await anyio.to_thread.run_sync(
+                    _ensure_http_server, config_path, host, port, token
+                )
+            except Exception as exc:
+                raise DeepSeekError(
+                    "upstream_unavailable", f"{type(exc).__name__}: {exc}"
+                ) from exc
+            launch_err = await _wait_http_ready(url, HTTP_STARTUP_TIMEOUT)
+        if launch_err:
+            raise DeepSeekError("upstream_unavailable", launch_err)
     headers = {"Authorization": f"Bearer {token}"} if token else None
     http_client = httpx2.AsyncClient(headers=headers) if headers else None
     try:
@@ -494,7 +549,16 @@ def serve_stdio_autostart(
             Grounding boxes are returned as "<|ref|>label<|/ref|><|box|>[[x1,y1,x2,y2]]<|/box|>"
             lines; pointing returns the thinking chain containing "<|point|>[[x,y]]<|/point|>".
         """
-        return await _call_http_tool(url, token, image_path, question, thinking_style)
+        return await _call_http_tool(
+            url,
+            token,
+            image_path,
+            question,
+            thinking_style,
+            config_path,
+            host,
+            port,
+        )
 
     anyio.run(mcp.run_stdio_async)
 

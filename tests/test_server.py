@@ -522,6 +522,44 @@ def test_call_http_tool_raises_when_upstream_not_ready(tmp_path, monkeypatch):
     assert exc.value.code == "upstream_unavailable"
 
 
+def test_call_http_tool_self_heals_retries_ensure(tmp_path, monkeypatch):
+    """提供 config_path 时：实例未就绪会先确保拉起，失败后再重试一次才报错。"""
+    import asyncio
+
+    import dsv_mcp.server as server_mod
+
+    calls = {"ensure": 0, "wait": 0}
+
+    async def fake_wait(url, timeout):
+        calls["wait"] += 1
+        return "still down"
+
+    def fake_ensure(config_path, host, port, token):
+        calls["ensure"] += 1
+
+    monkeypatch.setattr(server_mod, "_wait_http_ready", fake_wait)
+    monkeypatch.setattr(server_mod, "_ensure_http_server", fake_ensure)
+    server_mod._LAUNCH_FAILED.clear()
+
+    async def run():
+        return await server_mod._call_http_tool(
+            "http://127.0.0.1:9999/mcp",
+            "",
+            str(tmp_path / "x.jpg"),
+            "q",
+            "none",
+            str(tmp_path / "config.json"),
+            "127.0.0.1",
+            9999,
+        )
+
+    with pytest.raises(DeepSeekError) as exc:
+        asyncio.run(run())
+    assert exc.value.code == "upstream_unavailable"
+    assert calls["ensure"] == 2  # 开头确保一次 + 失败后重试一次
+    assert calls["wait"] == 2
+
+
 def test_serve_stdio_autostart_does_not_block_on_http(tmp_path, monkeypatch):
     import threading
 
@@ -604,7 +642,7 @@ def test_ensure_http_server_starts_when_down(tmp_path, monkeypatch):
     cfg = str(tmp_path / "config.json")
     server_mod._ensure_http_server(cfg, "127.0.0.1", 9999, "sec")
     assert calls["cmd"] == [
-        sys.executable,
+        server_mod._child_interpreter(),
         "-m",
         "dsv_mcp",
         cfg,
@@ -620,6 +658,7 @@ def test_ensure_http_server_starts_when_down(tmp_path, monkeypatch):
 def test_resolve_token_env_fallback(monkeypatch):
     from dsv_mcp.server import _resolve_token
 
+    monkeypatch.delenv("DSV_MCP_TOKEN", raising=False)
     assert _resolve_token("") == ""
     monkeypatch.setenv("DSV_MCP_TOKEN", "from-env")
     assert _resolve_token("") == "from-env"
