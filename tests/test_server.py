@@ -549,10 +549,130 @@ def test_http_mode_serves_tool(tmp_path, monkeypatch):
         server.close()
 
 
+def _free_port() -> int:
+    import socket
+
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        return sock.getsockname()[1]
+
+
+def test_stdio_proxy_survives_idle_exits_on_eof(tmp_path):
+    """stdio 代理：闲置不自杀（长会话不炸）、EOF 才退出、全程零 stderr。
+
+    回归防护（Codex 侧已知行为）：codex 对用户配置的 MCP 服务器不会自动
+    重连（issue #29920），stdio 进程一旦死掉，本次会话所有识图调用都会
+    Transport closed；stderr 大量输出会触发 Windows 上的 Transport closed
+    （issue #7155）。所以代理必须：闲置期间活着、codex 关闭时才退出、
+    且不往 stderr 写任何东西。
+    """
+    import queue
+    import socket
+
+    import dsv_mcp.server as server_mod
+
+    cfg = tmp_path / "config.json"
+    cfg.write_text(
+        json.dumps(
+            {"accounts": [{"email": "a@b.c", "password": "p"}], "proxy": {"mode": "none"}}
+        ),
+        encoding="utf-8",
+    )
+    port = _free_port()
+    # 测试进程先占住端口：stdio 代理探测到「实例已就绪」就会跳过拉起 HTTP
+    # 子进程，整个测试不产生孤儿进程、不碰真实网络
+    stderr_text = ""
+    with socket.socket() as blocker:
+        blocker.bind(("127.0.0.1", port))
+        blocker.listen(1)
+        proc = subprocess.Popen(
+            [
+                server_mod._child_interpreter(),
+                "-m",
+                "dsv_mcp",
+                str(cfg),
+                "--autostart",
+                "--port",
+                str(port),
+            ],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        lines: queue.Queue = queue.Queue()
+
+        def pump() -> None:
+            assert proc.stdout is not None
+            for raw in proc.stdout:
+                lines.put(raw.decode("utf-8", errors="replace").rstrip("\r\n"))
+
+        reader = threading.Thread(target=pump, daemon=True)
+        reader.start()
+
+        def drain_until(pred, timeout=20.0):
+            deadline = time.monotonic() + timeout
+            got: list[dict] = []
+            while time.monotonic() < deadline:
+                try:
+                    raw = lines.get(timeout=0.2)
+                except queue.Empty:
+                    continue
+                if not raw.strip():
+                    continue
+                try:
+                    obj = json.loads(raw)
+                except json.JSONDecodeError:
+                    continue
+                got.append(obj)
+                if pred(obj):
+                    return obj
+            raise AssertionError(f"未在 {timeout}s 内收到预期响应: {got}")
+
+        try:
+            assert proc.stdin is not None
+            proc.stdin.write(
+                (
+                    '{"jsonrpc":"2.0","id":1,"method":"initialize","params":'
+                    '{"protocolVersion":"2025-06-18","capabilities":{},'
+                    '"clientInfo":{"name":"test","version":"1.0"}}}\n'
+                ).encode("utf-8")
+            )
+            proc.stdin.flush()
+            init = drain_until(lambda o: o.get("id") == 1)
+            assert init.get("result"), f"initialize 失败: {init}"
+            proc.stdin.write(b'{"jsonrpc":"2.0","method":"notifications/initialized"}\n')
+            proc.stdin.write(
+                b'{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}\n'
+            )
+            proc.stdin.flush()
+            tools = drain_until(lambda o: o.get("id") == 2)
+            names = [t.get("name") for t in tools["result"].get("tools", [])]
+            assert "describe_image" in names
+            # 闲置数秒：代理必须保持存活——这是长会话不炸的关键
+            time.sleep(4)
+            assert proc.poll() is None, "stdio 代理在闲置时自杀了"
+            # EOF（codex 关闭会话）：代理正常退出，不留孤儿
+            proc.stdin.close()
+            rc = proc.wait(timeout=20)
+            assert rc == 0
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+                proc.wait(timeout=10)
+            assert proc.stderr is not None
+            stderr_text = proc.stderr.read().decode("utf-8", errors="replace")
+    assert stderr_text.strip() == "", (
+        "stdio 代理向 stderr 输出了内容（会触发 Codex Transport closed）: "
+        f"{stderr_text[:500]}"
+    )
+
+
 def test_third_party_loggers_quieted():
     """第三方库日志降到 WARNING：避免 Codex Windows stderr 管道 bug（issue #7155）。"""
     assert logging.getLogger("httpx").level == logging.WARNING
     assert logging.getLogger("httpcore").level == logging.WARNING
+    assert logging.getLogger("httpx2").level == logging.WARNING
+    assert logging.getLogger("httpcore2").level == logging.WARNING
     assert logging.getLogger("mcp").level == logging.WARNING
     assert logging.getLogger("client").level == logging.WARNING
 
@@ -901,6 +1021,34 @@ def test_touch_middleware_refreshes_active(monkeypatch):
     assert called["n"] == 1
 
 
+def test_touch_middleware_tracks_inflight(monkeypatch):
+    """HTTP 请求在途期间计数 +1，结束后归零（看门狗靠它不杀长调用）。"""
+    import asyncio
+
+    import dsv_mcp.server as server_mod
+
+    entered = threading.Event()
+    release = threading.Event()
+    server_mod._INFLIGHT["n"] = 0
+
+    async def app(scope, receive, send):
+        entered.set()
+        release.wait(timeout=5)
+
+    async def run():
+        await server_mod._touch_middleware(app)({"type": "http"}, None, None)
+
+    thread = threading.Thread(target=lambda: asyncio.run(run()))
+    thread.start()
+    try:
+        assert entered.wait(timeout=5)
+        assert server_mod._INFLIGHT["n"] == 1
+    finally:
+        release.set()
+        thread.join(timeout=5)
+    assert server_mod._INFLIGHT["n"] == 0
+
+
 def test_idle_watchdog_exits_after_timeout(monkeypatch):
     import dsv_mcp.server as server_mod
 
@@ -943,6 +1091,36 @@ def test_idle_watchdog_keeps_running_while_active(monkeypatch):
     )
     assert fake.should_exit is True
     assert sleeps["n"] == 3
+
+
+def test_idle_watchdog_skips_while_inflight(monkeypatch):
+    """空闲时间已到但在途请求未结束：看门狗不得置 should_exit 强杀长调用。"""
+    import dsv_mcp.server as server_mod
+
+    class FakeServer:
+        should_exit = False
+
+    sleeps = {"n": 0}
+    server_mod._LAST_ACTIVE["t"] = 1000.0
+    server_mod._INFLIGHT["n"] = 1
+
+    def fake_sleep(sec):
+        sleeps["n"] += 1
+        if sleeps["n"] >= 3:
+            fake.should_exit = True  # 模拟外部置位（否则看门狗永远在等）
+
+    try:
+        fake = FakeServer()
+        server_mod._idle_watchdog(
+            fake,
+            600.0,
+            now=lambda: 5000.0,  # 距最后活跃已远超空闲阈值
+            sleep=fake_sleep,
+        )
+    finally:
+        server_mod._INFLIGHT["n"] = 0
+    assert sleeps["n"] == 3  # 在途期间一直轮询而不是第一轮就退出
+    assert fake.should_exit is True
 
 
 def test_http_mode_token_auth(tmp_path, monkeypatch):

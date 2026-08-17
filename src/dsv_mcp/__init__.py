@@ -65,12 +65,15 @@ def _quiet_third_party_loggers() -> None:
     实测（Codex issue #7155）：Windows 上 stdio MCP 服务器在工具执行期间
     往 stderr 大量输出（httpx 每次请求都打一行、mcp 库打 session 行）会让
     Codex 的 stderr 管道处理出错，最终整个工具调用报 Transport closed。
-    这些日志对用户无价值，直接静音；自己写的日志走文件（见 server 的
-    _stdio_log / HTTP 实例日志），不占 stderr。
+    mcp SDK 的 configure_logging 会在服务器启动时 basicConfig(INFO) 并把
+    RichHandler 挂到 stderr，所以 httpx2 每次请求的 INFO 行全漏到 stderr。
+    这些日志对用户无价值，在 import 阶段就把相关 logger 级别压掉（logger
+    级过滤在 root handler 之前生效，SDK 后续 basicConfig 也拦不住）；自己
+    写的日志走文件（见 server 的 _stdio_log / HTTP 实例日志），不占 stderr。
     """
     import logging
 
-    for name in ("httpx", "httpcore", "mcp", "client"):
+    for name in ("httpx", "httpcore", "httpx2", "httpcore2", "mcp", "client"):
         logging.getLogger(name).setLevel(logging.WARNING)
 
 

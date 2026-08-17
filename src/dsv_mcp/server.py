@@ -45,11 +45,13 @@ AUTOSTART_PATH = "/mcp"
 TOKEN_ENV = "DSV_MCP_TOKEN"
 # 共享 HTTP 实例启动等待上限：冷启动可能被杀软首扫拖慢，太短会导致 Codex 握手失败
 HTTP_STARTUP_TIMEOUT = 90.0
-HTTP_TOOL_TIMEOUT = 300.0
+HTTP_TOOL_TIMEOUT = 900.0  # 深度思考静默期实测可超过 5 分钟，读超时放宽到 15 分钟
 # HTTP 实例空闲多久（秒）后自动退出，避免 Codex 关闭后残留孤儿进程
 IDLE_SHUTDOWN_SECONDS = 600.0
 # 最近一次 HTTP 请求时间（monotonic），供空闲退出判断
 _LAST_ACTIVE: dict[str, float] = {"t": 0.0}
+# 在途 HTTP 请求数：>0 时禁止空闲退出（SSE 长流可能一次调用超过空闲阈值）
+_INFLIGHT: dict[str, int] = {"n": 0}
 # 后台拉起 HTTP 实例失败的错误记录（url -> 错误），供工具调用前检查
 _LAUNCH_FAILED: dict[str, str] = {}
 _LAUNCH_LOCK = threading.Lock()
@@ -401,12 +403,25 @@ def serve_http(
 
 
 def _touch_middleware(app):
-    """每个 HTTP 请求刷新 _LAST_ACTIVE，供空闲退出判断。"""
+    """每个 HTTP 请求刷新 _LAST_ACTIVE 并跟踪在途数，供空闲退出判断。
+
+    请求开始时计数 +1、结束时 -1 并再刷新一次活跃时间：深度思考可能一次
+    调用超过空闲阈值，若只记请求开始时间，看门狗会在长调用中途把实例强杀
+    （调用失败 + 下个调用冷启）。结束再刷新保证长调用结束后实例不会立即
+    被认为超时。
+    """
 
     async def wrapped(scope, receive, send):
         if scope["type"] == "http":
             _LAST_ACTIVE["t"] = time.monotonic()
-        await app(scope, receive, send)
+            _INFLIGHT["n"] += 1
+            try:
+                await app(scope, receive, send)
+            finally:
+                _LAST_ACTIVE["t"] = time.monotonic()
+                _INFLIGHT["n"] -= 1
+        else:
+            await app(scope, receive, send)
 
     return wrapped
 
@@ -417,9 +432,9 @@ def _idle_watchdog(
     now=time.monotonic,
     sleep=time.sleep,
 ) -> None:
-    """连续 idle_seconds 秒无请求则置 should_exit 让 uvicorn 优雅退出。"""
+    """连续 idle_seconds 秒无请求且无在途调用时置 should_exit 让 uvicorn 退出。"""
     while not server.should_exit:
-        if now() - _LAST_ACTIVE["t"] >= idle_seconds:
+        if _INFLIGHT["n"] == 0 and now() - _LAST_ACTIVE["t"] >= idle_seconds:
             server.should_exit = True
             return
         sleep(2.0)
@@ -628,13 +643,26 @@ def serve_stdio_autostart(
                 host,
                 port,
             )
+        except anyio.get_cancelled_exc_class():
+            # 客户端（codex）中止/超时取消请求：记日志后交给 SDK 收尾。
+            # 这里必须保持进程存活——codex 对用户配置的 MCP 不会自动重连，
+            # 进程一死，本次会话后续所有识图调用都会 Transport closed。
+            _stdio_log("调用被客户端取消，代理保持存活")
+            raise
         except Exception as exc:
             _stdio_log(f"调用失败 {type(exc).__name__}: {exc}")
-            raise
+            return f"识图失败: {type(exc).__name__}: {exc}"
         _stdio_log(f"调用完成，结果 {len(result)} 字符")
         return result
 
-    anyio.run(mcp.run_stdio_async)
+    try:
+        anyio.run(mcp.run_stdio_async)
+    except BaseException as exc:
+        # 走到这里说明传输层已坏（codex 关闭会话等），正常退出；留一条日志
+        # 便于事后定位，避免「进程死了但没有任何记录」的盲区
+        _stdio_log(f"stdio 代理异常退出 {type(exc).__name__}: {exc}")
+        raise
+    _stdio_log("stdio EOF，代理正常退出")
 
 
 def _parse_args(argv: list[str]) -> tuple[str, bool, str | None, int | None, str | None]:

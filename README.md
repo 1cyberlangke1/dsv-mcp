@@ -12,27 +12,34 @@ DeepSeek 网页版识图模式（Vision）的 MCP 服务器。通过逆向网页
 
 ## 目录
 
-- [核心能力](#核心能力)
-- [快速开始](#快速开始)
-- [HTTP 部署](#http-部署)
-- [配置到 Codex](#配置到-codex)
-- [配置说明](#配置说明)
-- [思考模式](#思考模式)
-- [代理模式](#代理模式)
-- [测试](#测试)
-- [目录结构](#目录结构)
+- [dsv-mcp](#dsv-mcp)
+  - [目录](#目录)
+  - [核心能力](#核心能力)
+  - [快速开始](#快速开始)
+  - [HTTP 部署](#http-部署)
+  - [配置到 Codex](#配置到-codex)
+  - [配置说明](#配置说明)
+    - [accounts](#accounts)
+    - [proxy](#proxy)
+    - [server](#server)
+    - [auto\_delete](#auto_delete)
+  - [思考模式](#思考模式)
+  - [测试](#测试)
+  - [目录结构](#目录结构)
+  - [免责声明](#免责声明)
+  - [参考项目](#参考项目)
 
 ## 核心能力
 
-| 能力 | 说明 |
-| --- | --- |
-| 识图 MCP 工具 | `describe_image`：本地图片路径 + 可选问题 + 可选思考模式 |
-| 三种思考模式 | `grounding`（bbox 锚定对象）/ `pointing`（点坐标锚定）/ `none`（无模式提示词） |
-| 视觉原语提取 | grounding 自动从思考链提取 \\`<<｜｜ref｜｜>>obj｜｜/ref｜｜>><<｜｜box｜｜>>[[x1,y1,x2,y1]]<<｜｜/box｜｜>>\\` |
-| 多账号轮询 | 账号 round-robin 调度、token 缓存复用、上传风控冷却、验证码挑战检测（30 分钟冷却） |
-| 会话管理 | 自动清理可配置（`none` / `single` / `all`），删除失败自动入队补删 |
-| 代理三模式 | `none` 直连 / `manual` 显式代理 / `managed` 自动下载 mihomo 内核 + 订阅转配置 |
-| PoW | wasmtime 运行官方 wasm 求解 DeepSeekHashV1，challenge 严格一次性 |
+| 能力          | 说明                                                                                                            |
+| ------------- | --------------------------------------------------------------------------------------------------------------- |
+| 识图 MCP 工具 | `describe_image`：本地图片路径 + 可选问题 + 可选思考模式                                                        |
+| 三种思考模式  | `grounding`（bbox 锚定对象）/ `pointing`（点坐标锚定）/ `none`（无模式提示词）                                  |
+| 视觉原语提取  | grounding 自动从思考链提取 \\`<<｜｜ref｜｜>>obj｜｜/ref｜｜>><<｜｜box｜｜>>[[x1,y1,x2,y1]]<<｜｜/box｜｜>>\\` |
+| 多账号轮询    | 账号 round-robin 调度、token 缓存复用、上传风控冷却、验证码挑战检测（30 分钟冷却）                              |
+| 会话管理      | 自动清理可配置（`none` / `single` / `all`），删除失败自动入队补删                                               |
+| 代理三模式    | `none` 直连 / `manual` 显式代理 / `managed` 自动下载 mihomo 内核 + 订阅转配置                                   |
+| PoW           | wasmtime 运行官方 wasm 求解 DeepSeekHashV1，challenge 严格一次性                                                |
 
 ## 快速开始
 
@@ -78,7 +85,7 @@ dsv-mcp config.json --host 127.0.0.1 --port 8765
 [mcp_servers.dsv]
 command = 'D:\Git_Repository\dsv-mcp\.venv\Scripts\python.exe'
 args = ['-m', 'dsv_mcp', 'D:\Git_Repository\dsv-mcp\config.json', '--autostart']
-tool_timeout_sec = 300
+tool_timeout_sec = 900
 startup_timeout_sec = 180
 default_tools_approval_mode = "auto"
 ```
@@ -94,6 +101,8 @@ default_tools_approval_mode = "auto"
   （`SYSTEMROOT` / `PROCESSOR_ARCHITECTURE`），无需额外配置 `env_vars`
 - 监听地址 / 端口 / 鉴权 token 也可写在 `config.json` 的 `server` 段
   （`--host` / `--port` / `--token` 命令行参数优先）
+- `tool_timeout_sec`：Codex 调用工具的总体超时。深度思考阶段可能数分钟不返回
+  数据，300 秒容易被掐，建议 900 秒
 - 改完配置后需**新开** Codex 会话才生效
 
 ## 配置说明
@@ -187,7 +196,8 @@ HTTP 服务监听配置，命令行参数未指定时从这里取：
 - `pointing`：附加 `[Think with Pointing]` 标题，引导模型用点坐标锚定位置（适合轨迹/空间推理）；思考链出现 point 标记时返回完整思考链
 - `none`：不加模式提示词，只返回最终文本
 
-坐标均为 0-999 归一化整数，可用 `dsv_mcp.server.denormalize(coord, width, height)` 换算为像素坐标。
+坐标均为 0-999 归一化整数（与图片像素无关），画框时按
+`x * width / 999`、`y * height / 999` 换算为像素坐标。
 
 ## 测试
 
