@@ -31,15 +31,15 @@ DeepSeek 网页版识图模式（Vision）的 MCP 服务器。通过逆向网页
 
 ## 核心能力
 
-| 能力          | 说明                                                                                                            |
-| ------------- | --------------------------------------------------------------------------------------------------------------- |
-| 识图 MCP 工具 | `describe_image`：本地图片路径 + 可选问题 + 可选思考模式                                                        |
-| 三种思考模式  | `grounding`（bbox 锚定对象）/ `pointing`（点坐标锚定）/ `none`（无模式提示词）                                  |
-| 视觉原语提取  | grounding 自动从思考链提取 \\`<<｜｜ref｜｜>>obj｜｜/ref｜｜>><<｜｜box｜｜>>[[x1,y1,x2,y1]]<<｜｜/box｜｜>>\\` |
-| 多账号轮询    | 账号 round-robin 调度、token 缓存复用、上传风控冷却、验证码挑战检测（30 分钟冷却）                              |
-| 会话管理      | 自动清理可配置（`none` / `single` / `all`），删除失败自动入队补删                                               |
-| 代理三模式    | `none` 直连 / `manual` 显式代理 / `managed` 自动下载 mihomo 内核 + 订阅转配置                                   |
-| PoW           | wasmtime 运行官方 wasm 求解 DeepSeekHashV1，challenge 严格一次性                                                |
+| 能力          | 说明                                                                                                 |
+| ------------- | ---------------------------------------------------------------------------------------------------- |
+| 识图 MCP 工具 | `describe_image`：本地图片路径 + 可选问题 + 可选思考模式                                             |
+| 三种思考模式  | `grounding`（bbox 锚定对象）/ `pointing`（点坐标锚定）/ `none`（无模式提示词）                       |
+| 视觉原语提取  | grounding 自动从思考链提取 `<｜｜ref｜｜>obj｜｜/ref｜｜><｜｜box｜｜>[[x1,y1,x2,y1]]<｜｜/box｜｜>` |
+| 多账号轮询    | 账号 round-robin 调度、token 缓存复用、上传风控冷却、验证码挑战检测（30 分钟冷却）                   |
+| 会话管理      | 自动清理可配置（`none` / `single` / `all`），删除失败自动入队补删                                    |
+| 代理三模式    | `none` 直连 / `manual` 显式代理 / `managed` 自动下载 mihomo 内核 + 订阅转配置                        |
+| PoW           | wasmtime 运行官方 wasm 求解 DeepSeekHashV1，challenge 严格一次性                                     |
 
 ## 快速开始
 
@@ -83,8 +83,8 @@ dsv-mcp config.json --host 127.0.0.1 --port 8765
 
 ```toml
 [mcp_servers.dsv]
-command = 'D:\Git_Repository\dsv-mcp\.venv\Scripts\python.exe'
-args = ['-m', 'dsv_mcp', 'D:\Git_Repository\dsv-mcp\config.json', '--autostart']
+command = '${your_path}\.venv\Scripts\python.exe'
+args = ['-m', 'dsv_mcp', '${your_path}\dsv-mcp\config.json', '--autostart']
 tool_timeout_sec = 900
 startup_timeout_sec = 180
 default_tools_approval_mode = "auto"
@@ -170,7 +170,7 @@ HTTP 服务监听配置，命令行参数未指定时从这里取：
 - `token`：可选；配置后所有请求需带 `Authorization: Bearer <token>`，否则返回 401，
   `--token` 参数优先
 
-### auto_delete
+### auto\_delete
 
 识图结束后的会话清理策略（默认 `single`）：
 
